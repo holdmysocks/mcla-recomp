@@ -30,6 +30,8 @@ void MclaApp::OnPreSetup(rex::RuntimeConfig& config) {
 }
 
 void MclaApp::OnPostSetup() {
+  ConfigureFrameTiming();
+
 
   // The game probes for loose city data on a "t:" drive that retail consoles
   // do not have. Give it a device so the probes fail with "not found" rather

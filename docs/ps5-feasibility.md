@@ -61,3 +61,58 @@ Device extensions enabled: `VK_KHR_swapchain`, `VK_EXT_custom_border_color`, `VK
 Core features enabled include `robustBufferAccess`, `fullDrawIndexUint32`, `independentBlend`, `geometryShader`, `tessellationShader`, `sampleRateShading`; the full list is in the run log.
 
 Which of these are required rather than opportunistic is not yet known. The backend has a framebuffer path (`render_target_path_vulkan = "fbo"`) that should not need fragment shader interlock; that path has not been tried here. The next PC step is to turn optional features off one at a time and see what still renders, so the PS5 requirement list is a minimum, not a maximum.
+
+## Probe 2: signal context, threads, memory budget (`ps5/probes/sysprobe`), 2026-10-03
+
+Run as a payload. It finished and reported "done, cleaned up".
+
+| Test | Result |
+|---|---|
+| 100 threads created and joined | PASS |
+| Commit 2048 MiB of shared memory in 256 MiB steps | PASS, all eight steps |
+| Fault address in `siginfo` | Correct |
+| Register layout in the signal context | **Shifted by 0x30 from the SDK header** |
+
+Signal context detail. Marker values were loaded into registers before a deliberate fault and located in the context the handler received:
+
+| Register | SDK header offset | Actual offset |
+|---|---|---|
+| rdi | 0x18 | 0x48 |
+| rbx | (not printed) | 0x80 |
+| r12 | 0x70 | 0xA0 |
+| r13 | | 0xA8 |
+| r14 | | 0xB0 |
+| r15 | | 0xB8 |
+| rip | 0xB0 | 0xE0 |
+
+Every register checked sits exactly 0x30 bytes later than `ucontext_t` in ps5-payload-sdk v0.43 says. This explains probe 1 reading a stack address as the instruction pointer. The runtime's exception handler must read the machine context at `(char *)uc + 0x30 + offsetof(...)`, or use a corrected structure, on this firmware. Whether the offset is the same on other firmware versions is unknown.
+
+What this settles:
+
+- **Memory budget is not a blocker at the size the PC build uses.** 2 GiB committed without complaint; the PC build uses about 1.4 to 1.6 GiB. The upper limit was not searched for. The 4.5 GiB reservation plus a 2 GiB texture cache has not been tried together.
+- **Thread count is not a blocker.** The PC build runs about 80 threads.
+- **Fault handling is usable** once the 0x30 offset is applied.
+
+## Probe 3: compiling with the PS5 toolchain (`ps5/compile_probe.sh`), 2026-10-03
+
+Syntax-only check (`-fsyntax-only`, C++23, prospero-clang++ 18.1.3 from ps5-payload-sdk v0.43). Nothing was linked, so this says nothing yet about missing libraries or symbols.
+
+| Set | Result |
+|---|---|
+| Generated game code | **121 of 121 source files pass** |
+| ReXGlue runtime, portable and POSIX sources | 195 of 254 pass |
+
+The generated code needed three small SDK header changes first (`patches/rexglue-ps5-platform.patch`): a `REX_PLATFORM_PS5` definition, and extending two existing macOS fallbacks to PS5 because the SDK's libc++ lacks floating-point `std::from_chars` and `std::chrono::clock_cast`. It also needed a PS5 entry in the dynamic-library name table.
+
+The 59 runtime failures fall into four groups:
+
+| Group | Files | Nature |
+|---|---|---|
+| Include paths the probe script did not supply (renderdoc, glslang SPIR-V headers, generated `rex/version.h`, and so on) | about 40 | Probe artefact, not a porting problem. A real CMake build supplies these |
+| `static_assert` "This file is POSIX-only" keyed on Linux or macOS | 8 | One-line condition change per file |
+| Linux-only names: `fseeko64`, `ftello64`, `ftruncate64`, `mmap64`, `stat64`, `CLOCK_MONOTONIC_RAW`, `SYS_gettid`, `pthread_getname_np` | 5 | FreeBSD has the plain 64-bit-clean equivalents |
+| libc++ gaps: `std::jthread`, `std::stop_token` in `timer_queue.cpp` | 1 | Needs a small replacement |
+
+Also seen: the window surface code includes X11/XCB headers, and the Vulkan loader, RenderDoc and SPIRV-Tools are opened by library name at run time. PS5 needs its own surface and a statically linked driver, as expected.
+
+Verdict: **no compiler-level blocker.** The toolchain's age (clang 18, older libc++) costs a handful of fallbacks, not a redesign. The real porting work is the platform layer (memory, exception handler, threads, surface, audio, input) and linking against a PS5 Vulkan driver.

@@ -82,3 +82,48 @@ Not established:
 - Which slow stretches were loading screens. The counters carry no game-state marker.
 
 PS5 note: a 2 GB texture cache is a memory-budget question there, and the budget is still unmeasured.
+
+## Performance: third play session, `-BigTextureCache` (2026-10-03, run `play-20261003-155942`)
+
+5.4 minutes. User report: a little slow motion, about the same as before.
+
+| Measure | Session 2 (default cache) | Session 3 (1536/2048 MB cache) |
+|---|---|---|
+| Texture cache misses per minute | 3,445 | 4,176 |
+| Frames over 40 ms | 1.7% | 6.2% |
+| Slow frames that had texture misses | 510 of 547 | 369 of 580 |
+| Frames with more than 5,500 draw calls that were slow | 6% | 30% |
+
+Conclusions:
+
+- **The larger texture cache did not reduce misses**, so the misses are not evictions. They are most likely first-time loads as the open world streams in. The option is not worth its memory and should stay at the default, which also suits the PS5. Not verified: that the three options were actually applied (the log does not echo them).
+- **This session is not a clean measurement.** A four-job compile was running in WSL on the same machine for the whole session. The jump in slow heavy-scene frames (6% to 30%) is most likely that competing load, which itself shows the game is CPU-bound in heavy scenes.
+- **Slow frames cluster at 50 ms.** With vsync on, a frame that misses the 33.3 ms deadline waits for the next display interval and becomes 50 ms (20 FPS), so a small overrun costs a third of the speed. The median normal frame is already at 33.3 ms with a 95th percentile of 36 ms, so there is little headroom. LARecomp's notes describe the same quantisation and solve it by disabling vsync and pacing frames with a host-side limiter; that needs a frame limiter here, because without one the game runs faster than real time.
+
+## Frame limiter and frame-rate targets (2026-10-03)
+
+`src/frame_timing.cpp` and `config/frame_timing.toml`. The game's timer now receives the real elapsed time instead of a fixed 33.3 ms step, vsync is off by default, and a host limiter sleeps to a wall-clock deadline. `--mcla_fps=30|60|120` selects the target (default 30), `0` is uncapped, `-1` restores the original fixed-step behaviour. Hook addresses and timer analysis are from LARecomp's notes.
+
+Title screen, RTX 4080 and Ryzen 7 7800X3D, D3D12, last 15 seconds of each 60-second run:
+
+| Target | Measured | Median frame | 5th to 95th percentile | Draw calls per frame at that moment |
+|---|---|---|---|---|
+| 30 | 30.0 FPS | 33.40 ms | 29.6 to 37.1 ms | 6,736 |
+| 60 | 60.0 FPS | 16.58 ms | 13.9 to 19.7 ms | 3,873 |
+| 90 | 67.5 FPS | 14.55 ms | 13.1 to 17.3 ms | 3,683 |
+| 120 | 37.4 FPS | 26.45 ms | 24.4 to 29.8 ms | 7,706 |
+| uncapped | 51.3 FPS | 19.45 ms | 17.3 to 22.2 ms | 4,970 |
+
+Reading this:
+
+- **The limiter holds 30 and 60 exactly** when the scene allows it.
+- **The game is CPU-bound well below 120 FPS.** The title screen's camera flies over the city, so each run ended on a different view; frame time tracks draw calls at roughly 3.5 to 4 microseconds per draw. The 120 run was not slower because of its target, it ended on a heavier view (7,706 draws). The ceiling on this PC is about 50 to 70 FPS on the title screen.
+- **Two threads are saturated** when uncapped (`scripts/thread_profile.ps1`): the guest thread that builds the frame (95% of a core) and the SDK's "GPU Commands" thread that translates Xenos commands to the host API (94%). Everything else is under 10%. Raising the frame rate means speeding up both.
+- At 30 FPS a 6,700-draw frame needs about 23 to 26 ms of the 33.3 ms budget, which is why busier gameplay scenes overrun.
+
+Not yet verified:
+
+- Gameplay at any target. Only the title screen was measured. Whether real-delta timing removes the slow motion in races needs a play session.
+- Correct game speed at 60. LARecomp reports the simulation is rate-independent with these hooks but needed further fixes for camera smoothing, chassis roll and ground filtering above 30 FPS; none of those are ported here. Intro movies are reported to play fast.
+- Frame-to-frame jitter at 30 is about plus or minus 4 ms. The limiter waits inside the timer update, not at present, which may be the cause.
+- That `vsync=false` set from the app reaches the GPU plugin. The log reports the value as false and the 60 FPS result is consistent with it.

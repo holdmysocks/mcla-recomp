@@ -46,7 +46,7 @@ Requirements: Git, CMake 3.25+, Ninja, Clang 20, Visual Studio Build Tools (for 
 ## Credits
 
 - ReXGlue SDK by Tom Clay and contributors; Xenia by Ben Vanik and contributors.
-- [LARecomp](https://github.com/mzzvxm/LARecomp) by mzzvxm and contributors, consulted as a reference with the author's permission. The `t:` drive mapping and the diagnosis of the SDK vblank timer problem come from that project's notes.
+- [LARecomp](https://github.com/mzzvxm/LARecomp) by mzzvxm and contributors. The `t:` drive mapping and the diagnosis of the SDK vblank timer problem come from that project's notes.
 - XenonRecomp by hedge-dev, on which ReXGlue's analysis builds.
 
 ## Licence

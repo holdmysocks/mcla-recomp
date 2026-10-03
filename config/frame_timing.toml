@@ -1,0 +1,40 @@
+# Frame timing hooks. Implemented in src/frame_timing.cpp.
+#
+# The addresses and the analysis of the engine timer (sub_821BDA90, timer
+# object at 0x827D7500) come from LARecomp's TECHNICAL_NOTES.md, sections 1-3,
+# used with its author's permission. The original 60 FPS timing pipeline there
+# is credited to BadassBaboon.
+
+# 0x821BDAB0: `subf r8,r10,r11`, elapsed guest ticks since the previous frame.
+# Hooked after the instruction: clamps a runaway delta and runs the host frame
+# limiter, so the wait is part of the frame the timer then measures.
+[[midasm_hook]]
+name = "mcla_frame_delta"
+address = 0x821BDAB0
+after_instruction = true
+registers = ["r8"]
+
+# 0x821BDB58: head of the first fixed-timestep block, which overwrites the
+# measured delta with a fixed 33.3 ms. Jumping to loc_821BDC34 skips only that
+# overwrite; the accumulated-time updates before it still run.
+[[midasm_hook]]
+name = "mcla_use_real_delta"
+address = 0x821BDB58
+jump_address_on_true = 0x821BDC34
+
+# 0x821BDB90: the second fixed-timestep path, taken on every gameplay frame.
+# Hooked after `lfs f11,0x20(r3)`; f11 is replaced with the measured unscaled
+# delta at [r3+0x58] so this path publishes real time too.
+[[midasm_hook]]
+name = "mcla_fixed_step_path"
+address = 0x821BDB90
+after_instruction = true
+registers = ["r3", "f11"]
+
+# 0x82419AA0: `li r11,2`, the present interval (vblanks per present) written
+# into the swap packet. Two means 30 Hz.
+[[midasm_hook]]
+name = "mcla_present_interval"
+address = 0x82419AA0
+registers = ["r11"]
+jump_address_on_true = 0x82419AA4

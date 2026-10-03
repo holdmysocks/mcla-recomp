@@ -23,4 +23,5 @@ class MclaApp : public rex::ReXApp {
 
  private:
   void InstallCrashTrace();
+  void ConfigureFrameTiming();
 };

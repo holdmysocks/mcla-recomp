@@ -16,6 +16,7 @@ set(MCLA_SOURCES
     src/mcla_app.cpp
     src/crash_trace.cpp
     src/audio_fallback.cpp
+    src/frame_timing.cpp
     src/code_pointer_scan.cpp
 )
 
@@ -26,3 +27,8 @@ else()
 endif()
 
 rexglue_setup_target(mcla)
+
+if(WIN32)
+    # timeBeginPeriod for the frame limiter.
+    target_link_libraries(mcla PRIVATE winmm)
+endif()
