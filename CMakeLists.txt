@@ -17,6 +17,8 @@ set(MCLA_SOURCES
     src/crash_trace.cpp
     src/audio_fallback.cpp
     src/frame_timing.cpp
+    src/render_perf.cpp
+    src/sampling_profiler.cpp
     src/code_pointer_scan.cpp
 )
 

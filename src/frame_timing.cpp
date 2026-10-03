@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -40,7 +41,17 @@ REXCVAR_DEFINE_INT32(mcla_fps, 30, "MCLA",
                      "-1 restores the game's original fixed 30 Hz timing")
     .range(-1, 240);
 
+// Off by default: skipping here also skips whatever puts the game logo on the
+// title screen (only "PRESS START" remains). Tested with and without the
+// render-pass mask change; the logo is missing either way.
+REXCVAR_DEFINE_BOOL(mcla_skip_intro, false, "MCLA",
+                    "Skip the intro movies. Side effect: the title screen loses its logo");
+
 namespace {
+
+// The engine timer object lives at a fixed guest address (sub_821BDA90).
+constexpr uint32_t kGuestFrameDelta = 0x827D7508;  // seconds, time-scaled
+constexpr uint32_t kGuestFrameRate = 0x827D750C;   // 1 / delta
 
 // Longest time one frame may advance the game clock. A streaming stall must
 // not reach physics and audio as one huge step.
@@ -142,6 +153,58 @@ bool mcla_present_interval(PPCRegister& r11) {
   }
   r11.u64 = 1;
   return true;
+}
+
+// A filter written as "move a fraction k toward the target every frame" is
+// only right at the frame rate it was tuned for. The same filter over an
+// arbitrary step dt is 1 - (1 - k)^(dt * 30), where k is the 30 FPS fraction.
+static double PerFrameToContinuous(double k30, double dt) {
+  return 1.0 - std::pow(1.0 - k30, dt * 30.0);
+}
+
+static void RescaleCameraFactor(PPCRegister& reg) {
+  if (OriginalTiming()) {
+    return;
+  }
+  const double dt = ReadGuestFloat(kGuestFrameDelta);
+  const double raw = reg.f64;
+  if (raw <= 0.0 || raw >= 1.0 || dt <= 0.0) {
+    return;
+  }
+  // The game halves the tune value itself when its integer frame rate is
+  // below 60 (0x82320454..0x82320464), so the value arriving here is already
+  // the 30 FPS factor in that case and the raw tune value otherwise.
+  const float fps = ReadGuestFloat(kGuestFrameRate);
+  const bool already_halved = static_cast<int>(fps + 0.5f) < 60;
+  reg.f64 = PerFrameToContinuous(already_halved ? raw : 0.5 * raw, dt);
+}
+
+void mcla_camera_pos_smoothing(PPCRegister& f13) {
+  RescaleCameraFactor(f13);
+}
+
+void mcla_camera_lookat_smoothing(PPCRegister& f0) {
+  RescaleCameraFactor(f0);
+}
+
+void mcla_chassis_depth_smoothing(PPCRegister& f0) {
+  if (OriginalTiming()) {
+    return;
+  }
+  const double dt = ReadGuestFloat(kGuestFrameDelta);
+  if (dt > 0.0) {
+    f0.f64 = PerFrameToContinuous(0.10, dt);
+  }
+}
+
+bool mcla_hook_skip_intro() {
+  return REXCVAR_GET(mcla_skip_intro);
+}
+
+void mcla_skip_intro_render_pass_mask(PPCRegister& r4) {
+  if (REXCVAR_GET(mcla_skip_intro)) {
+    r4.u32 = 0xFEFFFFFFu;
+  }
 }
 
 void MclaApp::ConfigureFrameTiming() {

@@ -94,6 +94,12 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
 
 }  // namespace
 
+// Guest function containing a host address inside recompiled code, or 0.
+uint32_t MclaGuestFunctionForHostPc(uintptr_t host_pc) {
+  uintptr_t offset = 0;
+  return GuestFunctionFor(host_pc, &offset);
+}
+
 void MclaApp::InstallCrashTrace() {
   auto* dispatcher = runtime()->function_dispatcher();
   g_host_to_guest.clear();
@@ -107,4 +113,5 @@ void MclaApp::InstallCrashTrace() {
 #ifdef _WIN32
   AddVectoredExceptionHandler(1, OnException);
 #endif
+  StartProfilerIfRequested();
 }

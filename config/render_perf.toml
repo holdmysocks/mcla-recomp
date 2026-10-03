@@ -1,0 +1,35 @@
+# Rendering performance hooks. Implemented in src/render_perf.cpp.
+# Addresses and analysis from LARecomp (single tile and fence throttle are
+# credited there to BadassBaboon), used with its author's permission.
+
+# 0x8217A700 in grcDevice::BeginTiledRendering (sub_8217A470), after the tile
+# size has been computed and before the tile rectangle loop. r7/r8 = tile
+# width/height, r28/r25 = screen width/height, r17 = render target (0 for the
+# main scene). The Xbox 360 had 10 MiB of framebuffer memory, so the game
+# renders 720p with MSAA as two tiles and submits the scene once per tile.
+# Making the tile the size of the screen submits it once.
+[[midasm_hook]]
+address = 0x8217A700
+name = "mcla_single_tile"
+registers = ["r7", "r8", "r17", "r25", "r28"]
+
+# 0x82410E34 in sub_82410D70 (surface creation): rejects a surface whose end
+# exceeds 0x800 EDRAM tiles, the real console's capacity. One 720p MSAA tile
+# needs more. The runtime's virtual EDRAM is 4096 tiles, and the surface
+# header's base field is 12 bits, so up to 4096 is safe. r3 = base, r30 =
+# size, r11 = base + size; true jumps to the success branch.
+[[midasm_hook]]
+address = 0x82410E34
+name = "mcla_edram_limit"
+registers = ["r3", "r30", "r11"]
+jump_address_on_true = 0x82410E48
+
+# 0x82412FB0 in sub_82412F98, the fence poll called from D3DDevice_BlockOnFence
+# (sub_82411E98): 32 `mr r31,r31` no-ops meant to idle a PowerPC pipeline.
+# On the host this is a busy loop; profiling showed the game thread spending
+# 36% of its time here and another 30% in the surrounding wait. true skips the
+# no-ops after yielding the host CPU instead.
+[[midasm_hook]]
+address = 0x82412FB0
+name = "mcla_fence_spin"
+jump_address_on_true = 0x82412FD8

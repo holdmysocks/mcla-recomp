@@ -127,3 +127,62 @@ Not yet verified:
 - Correct game speed at 60. LARecomp reports the simulation is rate-independent with these hooks but needed further fixes for camera smoothing, chassis roll and ground filtering above 30 FPS; none of those are ported here. Intro movies are reported to play fast.
 - Frame-to-frame jitter at 30 is about plus or minus 4 ms. The limiter waits inside the timer update, not at present, which may be the cause.
 - That `vsync=false` set from the app reaches the GPU plugin. The log reports the value as false and the 60 FPS result is consistent with it.
+
+## Frame-rate correctness fixes (2026-10-03)
+
+User report at `--mcla_fps=60` before these fixes: intro movies play fast; camera smoothing, chassis roll and ground filtering are wrong, as LARecomp's notes predicted.
+
+Ported from LARecomp into `config/frame_timing.toml` and `src/frame_timing.cpp`:
+
+| Hook | Address | What it corrects |
+|---|---|---|
+| `mcla_camera_pos_smoothing` | 0x82320468 | Chase camera position filter factor, rewritten as a function of elapsed time |
+| `mcla_camera_lookat_smoothing` | 0x823204F4 | Chase camera look-at filter factor, same treatment |
+| `mcla_chassis_depth_smoothing` | 0x82563720 | Chassis ground-depth filter (0.10 per frame at 30 FPS) |
+| `mcla_hook_skip_intro` | 0x822C2F08 | Skips the intro movies (`--mcla_skip_intro`, default on) |
+| `mcla_skip_intro_render_pass_mask` | 0x821315E4 | Keeps the skip from enabling an unprepared render pass |
+
+The conversion used for each filter: a per-frame fraction k tuned at 30 FPS becomes `1 - (1 - k)^(dt * 30)` for a step of dt seconds.
+
+Status: builds and boots at the 60 target with no crash. **Not verified by eye**; needs a play session. With the intro skip on, three draws fail once at the moment of the skip (`Resolve region is empty`, six log lines at one timestamp); it does not recur. With the skip off there are none.
+
+## Profile and rendering performance fixes (2026-10-03)
+
+Sampling profile of the title screen, uncapped, before any fix (`--mcla_profile`, `scripts/profile_report.py`, symbol-enabled build):
+
+Game thread (96% busy):
+
+| Share | Where | What it is |
+|---|---|---|
+| 35.8% | `sub_82412F98` | Fence poll: 32 no-op spin, waiting on the GPU thread |
+| 16.4% | `sub_82411E98` | `D3DDevice_BlockOnFence`, the loop around it |
+| 13.9% | `sub_823D924C`, `sub_823D91FC` | Register restore/save helpers, called from that loop |
+| 2.9% | `sub_8244FEC8` | The game's sleep |
+
+About two thirds of the game thread was waiting. The bottleneck is the SDK's "GPU Commands" thread (90% busy): 62% in the SDK's Xenos translation, 14% in the NVIDIA driver, 10% in ntdll, 7% in memcpy. Within the SDK the largest items were register writes (`GetRegisterInfo` 8.7%, `WriteRegister` 8.5% + 5.5%, `ExecutePacketType0` 3.9%) and `UpdateBindings` 7.3%.
+
+Fixes made:
+
+| Fix | Where | Source |
+|---|---|---|
+| Single-tile rendering of the main scene, with the EDRAM limit raised to the host's 4096 tiles | `config/render_perf.toml`, `src/render_perf.cpp`, `--mcla_single_tile` | LARecomp |
+| Yield in the fence poll instead of spinning | same, `--mcla_fence_yield` | LARecomp |
+| Debug-only `GetRegisterInfo` lookup removed from every register write in Release builds | `patches/rexglue-register-write-fastpath.patch` | this project |
+
+Title screen, uncapped, last 15 s of a 60 s run, same build with switches:
+
+| Configuration | FPS | Median frame | Draw calls per frame |
+|---|---|---|---|
+| Both hooks off | 38.3 | 25.7 ms | 7,967 |
+| Fence yield only | 46.3 | 21.5 ms | 6,803 |
+| Fence yield and single tile | 64.7 | 15.3 ms | 4,927 |
+
+All three include the register-write patch. Caveat: the title camera moves, and its path depends on elapsed game time, so the three runs are at the same time into the run but not guaranteed to be the identical view. The draw-call drop with single tile is the expected effect of submitting the scene once. A screenshot with both on shows the title screen rendering correctly, with no errors logged. Not yet checked in gameplay or with MSAA-sensitive scenes.
+
+## Intro skip removes the title logo (2026-10-03)
+
+Reported by the user, reproduced with window captures: with `--mcla_skip_intro` the title screen shows only "PRESS START", with or without the render-pass mask change. The skip is now off by default. Consequence: the intro movies play at the limiter's rate, so they are fast at targets above 30. A proper fix is to hold the limiter at 30 while a movie plays; that needs a way to detect movie playback.
+
+Also visible in captures: a dither pattern on foliage (palm fronds, tree shadows). LARecomp lists the same artifact as unresolved.
+
+Screenshots now use `PrintWindow`, which captures only the game window.

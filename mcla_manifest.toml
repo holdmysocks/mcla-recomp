@@ -8,4 +8,4 @@ game_root = "game"
 [entrypoint]
 file_path = "game/default.xex"
 out_directory_path = "generated/default"
-includes = ["config/mcla.toml", "config/data_referenced.toml", "config/runtime_discovered.toml", "config/frame_timing.toml"]
+includes = ["config/mcla.toml", "config/data_referenced.toml", "config/runtime_discovered.toml", "config/frame_timing.toml", "config/render_perf.toml"]

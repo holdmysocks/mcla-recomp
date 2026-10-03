@@ -23,6 +23,7 @@ public static class Win { [StructLayout(LayoutKind.Sequential)] public struct RE
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }
 "@
 [Win]::SetProcessDPIAware() | Out-Null
@@ -36,17 +37,17 @@ for ($i = 1; $i -le $Shots; $i++) {
     Start-Sleep -Seconds $interval
     $p.Refresh()
     if ($p.HasExited) { "process exited early, code $($p.ExitCode)"; break }
-    if ($p.MainWindowHandle -ne 0) { [Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null; Start-Sleep -Milliseconds 400 }
+    # PrintWindow asks the window itself for its contents, so the capture never
+    # contains another application even when the game is not in front.
     $r = New-Object Win+RECT
-    # The capture copies screen pixels, so only take it when the game is in front.
-    if ($p.MainWindowHandle -ne 0 -and [Win]::GetForegroundWindow() -ne $p.MainWindowHandle) {
-        "shot ${i}: skipped, game window is not in front"
-    } elseif ($p.MainWindowHandle -ne 0 -and [Win]::GetWindowRect($p.MainWindowHandle, [ref]$r) -and ($r.R - $r.L) -gt 0) {
+    if ($p.MainWindowHandle -ne 0 -and [Win]::GetWindowRect($p.MainWindowHandle, [ref]$r) -and ($r.R - $r.L) -gt 0) {
         $bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
         $g = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size)
-        $bmp.Save("$runs\$stamp-$i.png"); $g.Dispose(); $bmp.Dispose()
-        "shot $i at $($i * $interval)s: $runs\$stamp-$i.png"
+        $hdc = $g.GetHdc()
+        $ok = [Win]::PrintWindow($p.MainWindowHandle, $hdc, 2)
+        $g.ReleaseHdc($hdc)
+        if ($ok) { $bmp.Save("$runs\$stamp-$i.png"); "shot $i at $($i * $interval)s: $runs\$stamp-$i.png" } else { "shot ${i}: PrintWindow failed" }
+        $g.Dispose(); $bmp.Dispose()
     } else { "shot ${i}: no window" }
 }
 $p.Refresh()
