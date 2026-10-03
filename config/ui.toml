@@ -1,0 +1,33 @@
+# User-interface hooks. Implemented in src/button_prompts.cpp.
+# Addresses and analysis from LARecomp, used with its author's permission.
+#
+# Button prompt glyphs. The game's UI movies and the texture dictionary the
+# Xbox 360 build loads (resources/ui/shared_latin.xtd) contain both the Xbox
+# and the PlayStation glyphs. The movies choose with
+# `icon.gotoAndStop(iconID + platform * 49)`, where `platform` is a registry
+# integer the Xbox build hard-codes to 0. 0 = Xbox 360, 1 = PlayStation.
+
+# 0x821FE230 in the UI manager constructor (sub_821FDED8), one instruction
+# after the "platform" variant's value (+0x58) and text (+0x5C) are written.
+# r27 = the variant. Runs before the same constructor loads the first movies.
+[[midasm_hook]]
+address = 0x821FE230
+name = "mcla_platform_var_init"
+registers = ["r27"]
+
+# 0x821F8160 in sub_821F8038: `li r5,0`, the platform value pushed into a movie
+# as it is created (used for the intro movie at boot).
+[[midasm_hook]]
+address = 0x821F8160
+name = "mcla_platform_push"
+registers = ["r5"]
+jump_address_on_true = 0x821F8164
+
+# 0x825EE980 in sub_825EE970, the entry that runs a movie's action buffer.
+# r3 = the movie's script context, live for the duration of the call. Movies
+# read `platform` once when loaded, so a live switch has to write the variable
+# into each running movie; this is where that is safe to do.
+[[midasm_hook]]
+address = 0x825EE980
+name = "mcla_swf_context_enter"
+registers = ["r3"]

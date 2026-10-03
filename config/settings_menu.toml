@@ -1,0 +1,111 @@
+# In-game settings menu, plus the two display options it controls that are
+# implemented as hooks. Implemented in src/settings_menu.cpp.
+#
+# Ported from LARecomp's pause menu (src/mc_engine/pause_menu.cpp), with its
+# author's permission. The reverse engineering of the game's menu system that
+# these addresses rest on is theirs.
+#
+# How it works: the game's pause menu has a Settings tab backed by a tree of
+# menu states. Buttons for our submenus are appended to that tab. Entering one
+# swaps the pause list's row source for row objects of the game's own option
+# classes (checkbox and value rows), each bound to one of our options. Leaving
+# restores the list and saves the options to mcla.toml.
+
+# 0x82660644: r3 = the PM_Continue state; its parent is the pause tab.
+[[midasm_hook]]
+address = 0x82660644
+name = "mcla_menu_capture_continue"
+registers = ["r3"]
+
+# 0x82660C2C: where the game disables the developer-only save button. r3 = the
+# PM_Save state, whose parent is the Settings menu state. Used to find the
+# Settings menu and to create our submenus the first time the pause menu is
+# shown. Also enables that button (r4 = 1) as "SAVE GAME", as LARecomp does.
+[[midasm_hook]]
+address = 0x82660C2C
+name = "mcla_menu_enable_save"
+registers = ["r3", "r4"]
+jump_address_on_true = 0x82660C30
+
+# 0x826686B8: pause menu button-click dispatch. r31 = pause menu controller.
+# true = the click was ours and is consumed.
+[[midasm_hook]]
+address = 0x826686B8
+name = "mcla_menu_click"
+registers = ["r3", "r31"]
+jump_address_on_true = 0x82668704
+
+# 0x82669864: pause menu cancel (back) handling. true = we left one of our
+# submenus and the game must not also act on the press.
+[[midasm_hook]]
+address = 0x82669864
+name = "mcla_menu_cancel"
+registers = ["r31"]
+jump_address_on_true = 0x826698AC
+
+# 0x82220314 in sub_82220308 (Flash element populate), after the prologue.
+# While one of our submenus is open, redirects the Settings state to it.
+[[midasm_hook]]
+address = 0x82220314
+name = "mcla_menu_populate_redirect"
+registers = ["r3"]
+jump_address_on_true = 0x82220318
+
+# 0x82631FDC in sub_82631FD0 (list view render). r3 = the list. Captures the
+# list, installs our rows while a submenu is open, and carries any value the
+# player stepped through to its option before the rows are drawn.
+[[midasm_hook]]
+address = 0x82631FDC
+name = "mcla_menu_list_populate"
+registers = ["r3"]
+jump_address_on_true = 0x82631FE0
+
+# 0x82630A14 in sub_826309E0 (container key dispatch). r31 = container, r28 =
+# key, r27 = dispatch argument. The pause screen's tab strip sits ahead of the
+# list and consumes left/right; while a submenu is open they are routed to the
+# list instead. true jumps to the "consumed" exit.
+[[midasm_hook]]
+address = 0x82630A14
+name = "mcla_menu_key_dispatch"
+registers = ["r31", "r28", "r27"]
+jump_address_on_true = 0x82630A98
+
+# 0x8266126C in sub_82661210: dereferences the list's table source without a
+# null check. Our rows clear that field while a submenu is open. true jumps to
+# the function's own "nothing selected" exit.
+[[midasm_hook]]
+address = 0x8266126C
+name = "mcla_menu_null_table_guard"
+registers = ["r30"]
+jump_address_on_true = 0x82661290
+
+# 0x8265F0F0 in sub_8265F008: calls through a menu list's vtable without
+# checking it. true skips the call when the vtable is null.
+[[midasm_hook]]
+address = 0x8265F0F0
+name = "mcla_menu_list_vtable_guard"
+registers = ["r31"]
+jump_address_on_true = 0x8265F108
+
+# --- Options implemented as hooks ---------------------------------------------
+
+# Motion blur: two sites that load the blur enable into r3.
+[[midasm_hook]]
+address = 0x8260D0B8
+name = "mcla_motion_blur_gate"
+registers = ["r3"]
+jump_address_on_true = 0x8260D0BC
+
+[[midasm_hook]]
+address = 0x8260D0D4
+name = "mcla_motion_blur_gate"
+registers = ["r3"]
+jump_address_on_true = 0x8260D0D8
+
+# Depth of field: entry of the composite (sub_8260EBB8), r3 = the depth-of-field
+# object. Zeroing the circle-of-confusion vector at +0xF0 removes the blur and
+# leaves the rest of the frame intact.
+[[midasm_hook]]
+address = 0x8260EBB8
+name = "mcla_dof_composite"
+registers = ["r3"]

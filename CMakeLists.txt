@@ -18,6 +18,8 @@ set(MCLA_SOURCES
     src/audio_fallback.cpp
     src/frame_timing.cpp
     src/render_perf.cpp
+    src/button_prompts.cpp
+    src/settings_menu.cpp
     src/sampling_profiler.cpp
     src/code_pointer_scan.cpp
 )
