@@ -165,3 +165,36 @@ Files the run left on the console, all inside `/data/homebrew/PPSA99014`: `radv-
 - Whether the driver's memory use fits alongside the game's 4.5 GiB reservation.
 
 What this means for the port: the PS5 build of this project will need an Arch (or equally current LLVM) host for at least the final link, and the driver is linked statically as one large archive.
+
+## Probe 5: Vulkan feature dump (`ps5/probes/vkinfo`), 2026-10-03
+
+Our own title, "MCLA Vulkan Info" (PPSA99777), linked against the driver the same way as its smoke test (`ps5/probes/vkinfo/build.sh`). It queries the physical device and writes the result to its own folder; it creates no logical device and submits no GPU work. Uploaded to `/data/homebrew/PPSA99777`, launched by the user, ran and exited. Raw output: `ps5/results/mcla-vkinfo-ps5pro-13.42-2026-10-03.txt`.
+
+**Every extension and feature the PC Vulkan run used is present on the console.**
+
+| Item from the PC checklist | On PS5 |
+|---|---|
+| `VK_KHR_swapchain` | yes |
+| `VK_EXT_custom_border_color` | yes |
+| `VK_EXT_fragment_shader_interlock` (sample and pixel interlock) | yes |
+| `VK_EXT_memory_budget` | yes |
+| `VK_EXT_non_seamless_cube_map` | yes |
+| `VK_EXT_robustness2` (including null descriptors) | yes |
+| `robustBufferAccess`, `fullDrawIndexUint32`, `independentBlend`, `geometryShader`, `tessellationShader`, `sampleRateShading` | all yes |
+| `fragmentStoresAndAtomics`, `dualSrcBlend`, `depthClamp`, `samplerAnisotropy` (16x) | all yes |
+| `textureCompressionBC` | yes: BC1 to BC7 sampled with linear filtering |
+| MSAA | 1, 2, 4 and 8 samples for colour, depth and stencil |
+| Colour attachments | 8 |
+
+Also reported: 219 device extensions, including `VK_EXT_external_memory_host` (importing existing host memory). Device: `PlayStation 5 GPU (RADV NAVI21)`, Vulkan 1.4.354, Mesa 26.2.0. Conformance version 0.0.0.0, meaning the driver does not claim conformance.
+
+Memory as the driver reports it: a 4096 MiB host-visible heap and an 8192 MiB device-local heap. Queue families: one graphics/compute/transfer queue and four compute/transfer queues.
+
+Differences from a desktop GPU that the backend has to handle:
+
+- **`D24_UNORM_S8_UINT` and `X8_D24_UNORM_PACK32` are not supported.** Depth is available as `D16_UNORM`, `D32_SFLOAT` and `D32_SFLOAT_S8_UINT`. This is normal for AMD hardware and Xenia's Vulkan render-target code already has a 32-bit float depth path for it, but it is the path that will be used, and the Xbox 360's 24-bit depth has to be converted.
+- `shaderResourceResidency`, ETC2 and ASTC are not available. None are needed.
+
+### Verdict on the GPU path
+
+There is no missing capability. The Xenia-derived Vulkan backend's requirements, as observed on PC, are all met by this driver on this console. What remains unknown is behaviour under real load: draw throughput, shader compile stalls, driver bugs outside what its test suite covers, and memory use next to the game's 4.5 GiB reservation.
