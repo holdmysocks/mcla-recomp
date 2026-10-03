@@ -116,3 +116,21 @@ The 59 runtime failures fall into four groups:
 Also seen: the window surface code includes X11/XCB headers, and the Vulkan loader, RenderDoc and SPIRV-Tools are opened by library name at run time. PS5 needs its own surface and a statically linked driver, as expected.
 
 Verdict: **no compiler-level blocker.** The toolchain's age (clang 18, older libc++) costs a handful of fallbacks, not a redesign. The real porting work is the platform layer (memory, exception handler, threads, surface, audio, input) and linking against a PS5 Vulkan driver.
+
+## Probe 4 (in progress): the Vulkan driver, 2026-10-03
+
+Driver: mihawk-99's PS5_Vulkan, the Mesa 26.2 RADV port (`main` at the time, RADV pinned at `0b2d6d1a61d9`). GPL-3.0-or-later. No tagged releases.
+
+Build, recorded in `ps5/build_ps5_vulkan_driver.sh`:
+
+- **On Arch Linux (WSL, clang/LLD 23.1.1): all nine steps succeed**, producing the driver archive (`libvulkan_radeon.ps5.a`, 272 MB) and the author's smoke-test title `PPSA99014` (42 MB app folder).
+- On Ubuntu 24.04 (LLVM 18) the same steps build the shader compiler, runtime and RADV, but both link stages fail: an undefined `ps5_fp_ieee` in the base app, and the packaging tool rejecting a weak undefined `radv_EnumeratePhysicalDevices`. The driver's documentation names Arch as the supported host; this is why.
+- The build order and the sibling repositories (`PS5_PayloadSDK`, `PS5_Mesa`, `ps5-opengl` at tag `v0.3.0`) are not documented upstream. One upstream source download (zlib.net) was unreachable from here; the script substitutes zlib's own release archive, checked against the hash Mesa's build expects.
+
+A second driver, mpereiraesaa's ps5-vulkan, could not be built: it requires a companion repository (`logging_server`) that is not public.
+
+The smoke test creates a device and runs a buffer fill, a buffer copy, a compute dispatch and a triangle draw, each read back and compared, plus further checks. It writes its results to klog and to `radv-smoke.txt` in its own app folder, which FTP can read. It reports the device name and Vulkan version but not a full feature list; a feature dump needs a small title of our own linked the same way.
+
+**Not yet run on the console.** Circumstantial only: the console already has RetroArch (PPSA99169) and ProsperoEden installed, which the driver's author lists as running on this driver, and the user reports both open.
+
+What this means for the port: the PS5 build of this project will need an Arch (or equally current LLVM) host for at least the final link, and the driver is linked statically as one large archive.
