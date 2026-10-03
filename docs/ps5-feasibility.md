@@ -117,7 +117,7 @@ Also seen: the window surface code includes X11/XCB headers, and the Vulkan load
 
 Verdict: **no compiler-level blocker.** The toolchain's age (clang 18, older libc++) costs a handful of fallbacks, not a redesign. The real porting work is the platform layer (memory, exception handler, threads, surface, audio, input) and linking against a PS5 Vulkan driver.
 
-## Probe 4 (in progress): the Vulkan driver, 2026-10-03
+## Probe 4: the Vulkan driver, 2026-10-03
 
 Driver: mihawk-99's PS5_Vulkan, the Mesa 26.2 RADV port (`main` at the time, RADV pinned at `0b2d6d1a61d9`). GPL-3.0-or-later. No tagged releases.
 
@@ -131,6 +131,37 @@ A second driver, mpereiraesaa's ps5-vulkan, could not be built: it requires a co
 
 The smoke test creates a device and runs a buffer fill, a buffer copy, a compute dispatch and a triangle draw, each read back and compared, plus further checks. It writes its results to klog and to `radv-smoke.txt` in its own app folder, which FTP can read. It reports the device name and Vulkan version but not a full feature list; a feature dump needs a small title of our own linked the same way.
 
-**Not yet run on the console.** Circumstantial only: the console already has RetroArch (PPSA99169) and ProsperoEden installed, which the driver's author lists as running on this driver, and the user reports both open.
+### Result on the console
+
+The smoke-test title was uploaded to `/data/homebrew/PPSA99014` (seven files, sizes verified), launched by the user from the home screen, ran to completion and exited. Its results file, read back over FTP:
+
+**102 checks passed, 0 failed.**
+
+| Area | What passed |
+|---|---|
+| Device | `PlayStation 5 GPU (RADV NAVI21), Vulkan 1.4.354, radv Mesa 26.2.0`; instance and device creation |
+| Shader compilation | SPIR-V compiled to pipelines on the console for compute, vertex/fragment, tessellation, geometry, mesh and task stages |
+| Basics | Buffer fill and copy read back exactly; compute dispatch; clear and triangle draw read back texel for texel |
+| Geometry shaders | 15+ pipeline variants, strips of 16 to 128 vertices, indexed, indirect and indirect-count draws, primitive restart |
+| Tessellation | From coordinates, control points, with varyings, levels 2 to 9 |
+| Memory | The GPU reads what the CPU just wrote without a flush, and the reverse; 16 MiB read in 0.90 ms and written in 1.05 ms through a mapping; **a shader writes into the title's own anonymous memory through its address** |
+| Display | `VK_KHR_display` and `VK_KHR_swapchain`; one 3840x2160 display at 59.94 Hz; 3 to 5 swapchain images; 60 frames presented with FIFO pacing matching the refresh; swapchain replacement |
+| Other | Ray-tracing acceleration structures build; mesh and task shaders run |
+
+Not reported by the driver on this console: `VK_KHR_fragment_shader_barycentric` and `VK_KHR_fragment_shading_rate` (their checks were skipped, not failed). Neither is used by the Xenia-derived backend.
+
+Files the run left on the console, all inside `/data/homebrew/PPSA99014`: `radv-smoke.txt` (7.5 KB) and a `radv-shader-cache` folder.
+
+### What this settles
+
+- **A usable GPU path exists on this console.** Hardware-accelerated Vulkan 1.4 runs on the PS5 Pro at firmware 13.42, with on-console shader compilation and presentation to the display.
+- **The two features the Xenia Vulkan backend leans on most are present and exercised:** geometry shaders and swapchain presentation.
+- **GPU access to title memory by address works.** The emulated GPU reads guest memory directly, so this matters; it has to be confirmed at the scale of the 512 MiB guest physical range.
+
+### What it does not settle
+
+- The full feature and extension list against the PC checklist above (`fragmentStoresAndAtomics`, `independentBlend`, `sampleRateShading`, MSAA sample counts, BC formats, `VK_EXT_fragment_shader_interlock`, and so on). The smoke test does not print it. A small title of our own, linked the same way, is the next step.
+- Performance: draw-call throughput and shader compile time on the console.
+- Whether the driver's memory use fits alongside the game's 4.5 GiB reservation.
 
 What this means for the port: the PS5 build of this project will need an Arch (or equally current LLVM) host for at least the final link, and the driver is linked statically as one large archive.

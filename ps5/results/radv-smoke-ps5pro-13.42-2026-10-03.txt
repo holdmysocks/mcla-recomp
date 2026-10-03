@@ -1,0 +1,116 @@
+RADV smoke test starts
+standard error to klog: captured
+fp state: main 0x1f80, a new thread 0x1f80
+PASS fp state: main and a new thread run with IEEE denormals (MXCSR 0x1f80)
+PASS vkCreateInstance
+PASS one physical device
+device: PlayStation 5 GPU (RADV NAVI21), Vulkan 1.4.354, radv Mesa 26.2.0
+PASS vkCreateDevice
+PASS files: access answers in the title's folder
+PASS files: RADV's shader cache is in /app0/radv-shader-cache, open to FTP
+PASS fill: vkCmdFillBuffer of 64 KiB reads back exactly
+PASS copy: vkCmdCopyBuffer of 1 MiB reads back exactly
+PASS compute: SPIR-V compiles to a pipeline on the console
+PASS compute: 64 workgroups of 64 write every value their index names
+PASS triangle: a graphics pipeline compiles on the console
+PASS triangle: a clear and a draw read back texel for texel
+PASS tessellation from coordinates: a graphics pipeline compiles on the console
+PASS tessellation from coordinates: the patch covers the target (65536 of 65536 texels)
+PASS tessellation from control points: a graphics pipeline compiles on the console
+PASS tessellation from control points: the patch covers the target (65536 of 65536 texels)
+PASS tessellation with varyings: a graphics pipeline compiles on the console
+PASS tessellation with varyings: the patch covers the target in its colour
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels: a graphics pipeline compiles on the console
+PASS tessellation levels 2 to 9: each patch covers the target
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: strips of 16 to 128 vertices from 1, 2 and 4 points cover their rows
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a vertex count chosen from gl_PrimitiveIDIn draws every strip
+PASS geometry: a shader that may return early draws every strip
+PASS geometry: a graphics pipeline compiles on the console
+PASS geometry: a colour passes from the vertex shader to the fragment shader
+PASS geometry draws: a graphics pipeline compiles on the console
+PASS geometry: an indexed draw with a vertex offset draws the points its indices name
+PASS geometry draws: a graphics pipeline compiles on the console
+PASS geometry: an indexed indirect draw draws the points its indices name
+PASS geometry draws: a graphics pipeline compiles on the console
+PASS geometry: an indirect draw draws the points its arguments name
+PASS geometry draws: a graphics pipeline compiles on the console
+PASS geometry: an indirect count draw draws only the draws counted
+PASS geometry draws: a graphics pipeline compiles on the console
+PASS geometry: primitive restart cuts a triangle strip
+PASS geometry draws: a graphics pipeline compiles on the console
+PASS geometry: primitive restart cuts a triangle strip drawn indirectly
+PASS geometry record: a graphics pipeline compiles on the console
+PASS geometry: four points' invocations get primitive IDs 0 to 3
+PASS scratch with 16 floats: a graphics pipeline compiles on the console
+PASS scratch with 16 floats: every texel has its array's sum
+PASS scratch with 64 floats: a graphics pipeline compiles on the console
+PASS scratch with 64 floats: every texel has its array's sum
+PASS scratch with 256 floats: a graphics pipeline compiles on the console
+PASS scratch with 256 floats: every texel has its array's sum
+PASS scratch with 1024 floats: a graphics pipeline compiles on the console
+PASS scratch with 1024 floats: every texel has its array's sum
+PASS coherence: the GPU reads what the CPU just wrote, without a flush
+PASS coherence: the CPU reads what the GPU wrote over lines it held, without an invalidate
+coherence: 16 MiB read in 0.90 ms mapped, 0.98 ms on the heap; written in 1.05 ms mapped, 1.05 ms on the heap
+PASS primitive ID: a graphics pipeline compiles on the console
+primitive ID: left 32768 red 0 green, right 0 red 32768 green, 0 other
+PASS primitive ID: the fragment shader reads each triangle's own ID without a stage writing it
+barycentric: VK_KHR_fragment_shader_barycentric is not reported; its checks are skipped
+shading rate: VK_KHR_fragment_shading_rate is not reported; its checks are skipped
+acceleration structure: 1 triangles take 384 bytes, 65780 of scratch
+PASS acceleration structure: a GPU-built bottom level holds its one triangle
+acceleration structure: 2 triangles take 576 bytes, 65848 of scratch
+PASS acceleration structure: a GPU-built bottom level holds its two triangles
+PASS mesh tickets, one draw: a graphics pipeline compiles on the console
+PASS mesh tickets, one draw: 1024 workgroups each ran once and every cell shows one ticket
+PASS mesh tickets, two indirect draws: a graphics pipeline compiles on the console
+PASS mesh tickets, two indirect draws: 1024 workgroups each ran once and every cell shows one ticket
+PASS task payloads, one draw: a graphics pipeline compiles on the console
+PASS task payloads, one draw: 8192 task workgroups' payloads reach their 16384 mesh workgroups
+PASS task payloads, two indirect draws: a graphics pipeline compiles on the console
+PASS task payloads, two indirect draws: 8192 task workgroups' payloads reach their 16384 mesh workgroups
+PASS display: the VK_KHR_display and VK_KHR_swapchain commands
+PASS display: one 3840x2160 display
+PASS display: its modes
+display: PS5 VideoOut, 1 mode(s), the first at 59.940 Hz
+PASS display: vkCreateDisplayPlaneSurfaceKHR
+PASS display: the surface's support and capabilities
+PASS display: vkCreateSwapchainKHR
+PASS display: 3 to 5 swapchain images
+PASS display: 60 frames acquired, cleared and presented
+display: the last 50 frames took 0.834 s, 0.834 s at the mode's refresh
+PASS display: FIFO presents paced by the display's flips
+PASS display: the last frame's first and last pixels read back
+PASS display: a swapchain replacing the first
+PASS display: 3 to 5 swapchain images
+PASS display: the retired swapchain's acquire is out of date
+PASS display: 5 frames through the replacement
+host pointer: sceKernelMprotect with GPU access returned 0x00000000
+PASS host pointer: a shader writes a title's anonymous memory through its address
+RADV smoke test ends: 102 passed, 0 failed
