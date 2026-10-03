@@ -1,0 +1,58 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9b3cdf5..cbe5018 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -28,7 +28,7 @@ if(REXGLUE_ENABLE_TRACY)
+     add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PROFILING>)
+ endif()
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+-    add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++    add_compile_definitions(REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ # Graphics backend selection
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 1ddafd0..faea835 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -133,5 +133,5 @@ endif()
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+     target_sources(rexcore PRIVATE perf/counter.cpp)
+     target_compile_definitions(rexcore PUBLIC
+-        $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++        REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+diff --git a/src/core/perf/counter.cpp b/src/core/perf/counter.cpp
+index 536009e..09de75c 100644
+--- a/src/core/perf/counter.cpp
++++ b/src/core/perf/counter.cpp
+@@ -154,6 +154,16 @@ void SetCsvLogPath(const std::string& path) {
+ }
+ 
+ void WriteCsvFrame() {
++  // Frames are flipped inside the GPU plugin, which carries its own copy of
++  // this state, so a path set by the host never arrives here. An environment
++  // variable reaches every module.
++  static bool env_checked = false;
++  if (!g_csv_file && !env_checked) {
++    env_checked = true;
++    if (const char* env_path = std::getenv("REX_PERF_LOG_CSV"); env_path && *env_path) {
++      SetCsvLogPath(env_path);
++    }
++  }
+   if (!g_csv_file)
+     return;
+ 
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index fc46d86..3f9134b 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -102,7 +102,7 @@ endif()
+ 
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+     target_compile_definitions(rexruntime PUBLIC
+-        $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++        REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ if(WIN32)

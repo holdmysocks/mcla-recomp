@@ -1,0 +1,95 @@
+# Function entries referenced only from data (vtables, initialiser tables,
+# callbacks). Produced by --mcla_scan_code_pointers on 2026-10-03: a data word
+# that points into code, is not a recovered function, and directly follows a
+# blr/bctr/b/padding word. Not individually inspected.
+
+[functions."0x82134350"]
+name = "sub_82134350"
+
+[functions."0x82135AF4"]
+name = "sub_82135AF4"
+
+[functions."0x82135C6C"]
+name = "sub_82135C6C"
+
+[functions."0x823DEF0C"]
+name = "sub_823DEF0C"
+
+[functions."0x823E2B88"]
+name = "sub_823E2B88"
+
+[functions."0x823E6130"]
+name = "sub_823E6130"
+
+[functions."0x823E6384"]
+name = "sub_823E6384"
+
+[functions."0x823F3C68"]
+name = "sub_823F3C68"
+
+[functions."0x823F6EF8"]
+name = "sub_823F6EF8"
+
+[functions."0x823F6F40"]
+name = "sub_823F6F40"
+
+[functions."0x823FB800"]
+name = "sub_823FB800"
+
+[functions."0x823FB818"]
+name = "sub_823FB818"
+
+[functions."0x823FC880"]
+name = "sub_823FC880"
+
+[functions."0x823FDAD0"]
+name = "sub_823FDAD0"
+
+[functions."0x823FDAD8"]
+name = "sub_823FDAD8"
+
+[functions."0x823FDAE0"]
+name = "sub_823FDAE0"
+
+[functions."0x823FDAF8"]
+name = "sub_823FDAF8"
+
+[functions."0x823FDB08"]
+name = "sub_823FDB08"
+
+[functions."0x823FDB10"]
+name = "sub_823FDB10"
+
+[functions."0x823FDB18"]
+name = "sub_823FDB18"
+
+[functions."0x827AD168"]
+name = "sub_827AD168"
+
+[functions."0x827AFC78"]
+name = "sub_827AFC78"
+
+[functions."0x827B0538"]
+name = "sub_827B0538"
+
+[functions."0x827B0558"]
+name = "sub_827B0558"
+
+[functions."0x827B0578"]
+name = "sub_827B0578"
+
+[functions."0x827B0598"]
+name = "sub_827B0598"
+
+[functions."0x827B1048"]
+name = "sub_827B1048"
+
+[functions."0x827B1068"]
+name = "sub_827B1068"
+
+[functions."0x827B4B58"]
+name = "sub_827B4B58"
+
+[functions."0x827B4B78"]
+name = "sub_827B4B78"
+

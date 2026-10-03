@@ -1,0 +1,28 @@
+# Indirect-call targets found at run time: the runtime stopped with
+# "Call to invalid or unregistered function at guest address ...".
+# Appended by scripts/recover_loop.ps1. Not individually inspected.
+
+[functions."0x8249CBF0"]
+name = "sub_8249CBF0"
+
+[functions."0x8249CC00"]
+name = "sub_8249CC00"
+
+[functions."0x822C9DD8"]
+name = "sub_822C9DD8"
+
+[functions."0x82554080"]
+name = "sub_82554080"
+
+[functions."0x82264760"]
+name = "sub_82264760"
+
+[functions."0x82264770"]
+name = "sub_82264770"
+
+[functions."0x82262320"]
+name = "sub_82262320"
+
+[functions."0x822C9FE8"]
+name = "sub_822C9FE8"
+

@@ -1,0 +1,39 @@
+# Manual function-entry hints for default.xex (title 545407F8, version 0.0.0.8,
+# linked 2009-07-17). Each entry records why it exists. See
+# docs/function-recovery.md.
+
+# Pass 1: branch targets ReXGlue 0.10.0 analysis reported as
+# "UnresolvedCall ... target not in any function". All are reached by a plain
+# `b` from another function (tail calls into code no `bl` references).
+[functions."0x8220BF08"]
+name = "sub_8220BF08"
+
+[functions."0x8220C018"]
+name = "sub_8220C018"
+
+[functions."0x822B88C8"]
+name = "sub_822B88C8"
+
+[functions."0x822C98B8"]
+name = "sub_822C98B8"
+
+[functions."0x823F32E8"]
+name = "sub_823F32E8"
+
+[functions."0x823FD718"]
+name = "sub_823FD718"
+
+[functions."0x824B0DE8"]
+name = "sub_824B0DE8"
+
+# Pass 2: exposed once pass 1 split the surrounding code; same failure class.
+[functions."0x822C9948"]
+name = "sub_822C9948"
+
+# Run-time discoveries: indirect-call targets the runtime reported as
+# "Call to invalid or unregistered function". Reached only through pointers.
+[functions."0x827A7FD0"]
+name = "sub_827A7FD0"
+
+[functions."0x827A8220"]
+name = "sub_827A8220"

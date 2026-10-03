@@ -1,0 +1,36 @@
+# User-supplied game data and anything derived from it. Never commit.
+*.iso
+*.xex
+*.xexp
+*.rpf
+*.bik
+*.pe
+*.bin
+*.god
+/private/
+/game/
+/extracted/
+/dump/
+/generated/*
+!/generated/rexglue.cmake
+
+# Keys
+*.key
+keys.*
+
+# Build output
+/build/
+/out/
+*.elf
+*.self
+*.pkg
+*.obj
+*.o
+*.pdb
+*.exe
+*.dll
+*.so
+/third_party/
+/tools/
+/out/
+*.log
