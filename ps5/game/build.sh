@@ -122,6 +122,8 @@ for stage in "${stages[@]}"; do
     [ -z "${MCLA_HOT_PAGE_FAULTS:-}" ] || extra="$extra -DMCLA_HOT_PAGE_FAULTS=$MCLA_HOT_PAGE_FAULTS"
     # MCLA_CLEAR_PAGE_STATE=true restores the runtime's per-frame re-copy of all pages in use.
     [ -z "${MCLA_CLEAR_PAGE_STATE:-}" ] || extra="$extra -DMCLA_CLEAR_PAGE_STATE=$MCLA_CLEAR_PAGE_STATE"
+    # MCLA_SUBMIT_ON_BUFFER_END=true restores a submission at every end of the guest's primary buffer.
+    [ -z "${MCLA_SUBMIT_ON_BUFFER_END:-}" ] || extra="$extra -DMCLA_SUBMIT_ON_BUFFER_END=$MCLA_SUBMIT_ON_BUFFER_END"
     # A tuning run: cycle through setting combinations every 30 s from this second.
     [ -z "${MCLA_TUNE_FROM:-}" ] || extra="$extra -DMCLA_TUNE_FROM=$MCLA_TUNE_FROM"
     # Log presents every second and profile 5 s whenever they fall below this many.

@@ -537,6 +537,17 @@ int main() {
 #define MCLA_CLEAR_PAGE_STATE false
 #endif
   rex::cvar::SetFlagByName("clear_memory_page_state", MCLA_STRINGIZE(MCLA_CLEAR_PAGE_STATE));
+  // The runtime submits its command buffer to the driver each time the guest's
+  // primary buffer runs dry, three or four times a frame, and a submission is
+  // a blocking call into the console's driver: about 0.1 ms each when
+  // driving but 1.5 ms in the zoomed-out map, a fifth of the GPU command
+  // thread there. Without this it submits when the frame ends (or when it
+  // has to).
+#ifndef MCLA_SUBMIT_ON_BUFFER_END
+#define MCLA_SUBMIT_ON_BUFFER_END false
+#endif
+  rex::cvar::SetFlagByName("vulkan_submit_on_primary_buffer_end",
+                           MCLA_STRINGIZE(MCLA_SUBMIT_ON_BUFFER_END));
   rex::ui::SDLWindowedAppContext app_context;
   if (!app_context.Initialize()) {
     return Finish("the SDL application context did not initialise", 9);

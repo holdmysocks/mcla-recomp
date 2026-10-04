@@ -259,6 +259,8 @@ Submission, looked into (2026-10-04). The driver's own breakdown (on stderr ever
 
 A wrong turn, recorded so it is not repeated: those samples were first read as the driver's clock reads, because the profiler lists every code pointer it finds on the stack, stale ones included, and `os_time_get_nano` was among them. `ps5/title_support.c` now answers the monotonic clocks from the cycle counter (re-tied to the system clock every 100 ms), bound over `clock_gettime` for everything linked into the title. It works (no timing fault seen by the user, who found it mildly smoother) and removes a system call per clock read on every thread, but the map view's draws per second did not change: 230,000-240,000 before and after.
 
+One submission a frame (`vulkan_submit_on_primary_buffer_end` off, set by the PS5 host; `MCLA_SUBMIT_ON_BUFFER_END=true` at build time restores it): submissions about 30 a second instead of 125, `sceAgcDriverSubmitDcb` 110-290 ms per 10 s in the map view instead of 1,500-2,000, and the map view at 265,000-290,000 draws/s and 20-25 presents/s (was 230,000-240,000 and 15-19). No visual fault or added delay seen by the user. The driver's kick thread is then in `sceAgcSuspendPoint` about 4.5 s of every 10 (was about 2).
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.
