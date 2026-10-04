@@ -160,6 +160,20 @@ index 0c39a42..261e9e0 100644
    int MapViewsMac();
  #endif
    int MapViews(uint8_t* mapping_base);
+diff --git a/include/rex/thread/fiber.h b/include/rex/thread/fiber.h
+index 352af67..2395dc9 100644
+--- a/include/rex/thread/fiber.h
++++ b/include/rex/thread/fiber.h
+@@ -64,6 +64,9 @@ struct Fiber {
+   bool is_thread_fiber_ = false;
+ 
+   static void Trampoline();
++#elif REX_PLATFORM_PS5
++  // Thread fibers only; see fiber_ps5.cpp.
++  bool is_thread_fiber_ = false;
+ #endif
+ };
+ 
 diff --git a/include/rex/ui/renderdoc_api.h b/include/rex/ui/renderdoc_api.h
 index 536f710..9fcc46d 100644
 --- a/include/rex/ui/renderdoc_api.h
@@ -181,18 +195,21 @@ index 536f710..9fcc46d 100644
  
  namespace rex {
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 1ddafd0..a99e2e3 100644
+index 1ddafd0..3e873dc 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
-@@ -62,6 +62,7 @@ elseif(UNIX)
+@@ -62,8 +62,10 @@ elseif(UNIX)
          dbg_posix.cpp
          dynlib_posix.cpp
          exception_handler_posix.cpp
 +        exception_handler_ps5.cpp
          filesystem_posix.cpp
          fiber_posix.cpp
++        fiber_ps5.cpp
          mapped_memory_posix.cpp
-@@ -100,6 +101,8 @@ target_include_directories(rexcore PRIVATE
+         math_gcc.cpp
+         memory_posix.cpp
+@@ -100,6 +102,8 @@ target_include_directories(rexcore PRIVATE
  
  if(APPLE)
      target_link_libraries(rexcore PRIVATE pthread)
@@ -201,7 +218,7 @@ index 1ddafd0..a99e2e3 100644
  elseif(UNIX)
      target_link_libraries(rexcore PRIVATE pthread rt dl)
  endif()
-@@ -133,5 +136,5 @@ endif()
+@@ -133,5 +137,5 @@ endif()
  if(REXGLUE_ENABLE_PERF_COUNTERS)
      target_sources(rexcore PRIVATE perf/counter.cpp)
      target_compile_definitions(rexcore PUBLIC
@@ -456,6 +473,70 @@ index 0000000..5b640a1
 +}
 +
 +}  // namespace rex::arch
++
++#endif  // REX_PLATFORM_PS5
+diff --git a/src/core/fiber_ps5.cpp b/src/core/fiber_ps5.cpp
+new file mode 100644
+index 0000000..95e2cdb
+--- /dev/null
++++ b/src/core/fiber_ps5.cpp
+@@ -0,0 +1,58 @@
++/**
++ * @file        core/fiber_ps5.cpp
++ * @brief       Fiber support for PlayStation 5 homebrew: thread fibers only.
++ *
++ * Every guest thread converts itself to a fiber when it starts, so that much
++ * has to exist. Creating further fibers and switching between them is done
++ * with getcontext/makecontext/swapcontext on the other POSIX platforms; on the
++ * console the saved context does not have the layout the payload SDKs declare
++ * (see exception_handler_ps5.cpp), so those calls are not used here. A title
++ * that creates fibers needs a hand-written context switch instead.
++ */
++
++#include <rex/platform.h>
++#if REX_PLATFORM_PS5
++
++#include <rex/thread/fiber.h>
++
++#include <cassert>
++#include <cstdio>
++#include <cstdlib>
++
++namespace rex::thread {
++
++thread_local Fiber* Fiber::tls_current_ = nullptr;
++
++Fiber* Fiber::ConvertCurrentThread() {
++  auto* f = new Fiber();
++  f->is_thread_fiber_ = true;
++  tls_current_ = f;
++  return f;
++}
++
++Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
++  (void)stack_size;
++  (void)entry;
++  (void)arg;
++  std::fputs("rex::thread::Fiber::Create is not implemented on PS5\n", stderr);
++  return nullptr;
++}
++
++void Fiber::SwitchTo(Fiber* target) {
++  (void)target;
++  std::fputs("rex::thread::Fiber::SwitchTo is not implemented on PS5\n", stderr);
++  std::abort();
++}
++
++void Fiber::Destroy() {
++  if (is_thread_fiber_) {
++    tls_current_ = nullptr;
++  } else {
++    assert(this != tls_current_ && "Destroy called on the currently running fiber");
++  }
++  delete this;
++}
++
++}  // namespace rex::thread
 +
 +#endif  // REX_PLATFORM_PS5
 diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
