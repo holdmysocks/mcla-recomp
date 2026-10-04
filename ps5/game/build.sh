@@ -124,6 +124,8 @@ for stage in "${stages[@]}"; do
     [ -z "${MCLA_CLEAR_PAGE_STATE:-}" ] || extra="$extra -DMCLA_CLEAR_PAGE_STATE=$MCLA_CLEAR_PAGE_STATE"
     # A tuning run: cycle through setting combinations every 30 s from this second.
     [ -z "${MCLA_TUNE_FROM:-}" ] || extra="$extra -DMCLA_TUNE_FROM=$MCLA_TUNE_FROM"
+    # Log presents every second and profile 5 s whenever they fall below this many.
+    [ -z "${MCLA_PROFILE_DIPS:-}" ] || extra="$extra -DMCLA_PROFILE_DIPS=$MCLA_PROFILE_DIPS"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
     if [ -n "${TITLE:-}" ]; then
         # As an installable title, linked with the Vulkan driver, log over TCP.

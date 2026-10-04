@@ -81,6 +81,9 @@ uint64_t Ps5PresentCount();
 namespace rex::graphics {
 uint64_t SharedMemoryUploadedBytes();
 void SharedMemoryCounters(uint64_t out[10]);
+namespace vulkan {
+void SubmissionCounters(uint64_t out[4]);
+}
 }
 
 // As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC; as
@@ -768,6 +771,37 @@ int main() {
                "invalidates 2^%s pages, hot for %s ms, page state cleared each frame: %s",
                second, now.request_log2, now.hot_faults, now.invalidation_pages_log2, now.hot_ms,
                now.clear_each_frame);
+        }
+      }
+#endif
+#ifdef MCLA_PROFILE_DIPS
+      // Presents in every second, and a short profile of the moment whenever
+      // they fall below MCLA_PROFILE_DIPS: at most four in a run, at least
+      // 30 s apart, none in the first 45 s (start-up and loading).
+      {
+        static uint64_t dip_last_presents = 0;
+        static int dip_profiles = 0, dip_last_second = 0;
+        const uint64_t dip_presents = rex::ui::vulkan::Ps5PresentCount();
+        const unsigned in_second = static_cast<unsigned>(dip_presents - dip_last_presents);
+        dip_last_presents = dip_presents;
+        static uint64_t dip_last_submission[4] = {};
+        uint64_t submission[4] = {};
+        rex::graphics::vulkan::SubmissionCounters(submission);
+        Line("FPS %d s: %u; %llu submits taking %llu ms, %llu fence waits taking %llu ms", second,
+             in_second, static_cast<unsigned long long>(submission[0] - dip_last_submission[0]),
+             static_cast<unsigned long long>((submission[1] - dip_last_submission[1]) / 1000),
+             static_cast<unsigned long long>(submission[2] - dip_last_submission[2]),
+             static_cast<unsigned long long>((submission[3] - dip_last_submission[3]) / 1000));
+        for (int i = 0; i < 4; ++i) {
+          dip_last_submission[i] = submission[i];
+        }
+        if (second > 45 && in_second < MCLA_PROFILE_DIPS && dip_profiles < 4 &&
+            second - dip_last_second >= 30) {
+          ++dip_profiles;
+          Line("DIP %d s: %u presents in the last second, profiling 5 s", second, in_second);
+          ProfileRuntimeThreads(runtime->kernel_state(), 5, 25);
+          dip_last_second = second;
+          dip_last_presents = rex::ui::vulkan::Ps5PresentCount();
         }
       }
 #endif

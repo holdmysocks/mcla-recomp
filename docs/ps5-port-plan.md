@@ -231,6 +231,19 @@ Findings, in game, driving:
 
 Run 4 alternated `clear_memory_page_state`: on, 580-1,380 MiB/s copied and 18-30 presents/s; off, 56-98 MiB/s and 26-30 (presents top out at 30). The user saw no visual faults in a 445 s run. The host now sets it off (`MCLA_CLEAR_PAGE_STATE=true` at build time restores it), with 64 KiB request chunks, 16 pages invalidated per write fault and a 10 s hot period.
 
+### Hitches in menus and loading screens (2026-10-04)
+
+A build with `MCLA_PROFILE_DIPS=<n>` logs presents every second (`FPS` lines, with the number of command buffer submissions, the time spent in `vkQueueSubmit` and in blocking fence waits) and takes a 5 s profile whenever a second has fewer than n presents.
+
+- At a 30 target, play holds 28-31 presents/s; dips to 8-22 last 4-11 s, around menus, race starts and ends, loading.
+- In a dip the main guest thread is about 76% in its GPU wait and the GPU command thread about 29% in the driver's submit (0.06 ms a submit at the title screen, about 1 ms while driving, 2-3 ms in a dip; about 3 submits a frame).
+- **Pipelines were not being stored.** The pipeline storage file on the console held 154 pipelines from the first night and was never written again, so each run created several hundred during play (519 in 68 s, over 100 in one second at the start of a dip). Cause: the file is opened for update, read, then written with no positioning call in between, which the PS5 C library refuses (the read ends exactly at the end of the file, so no read reports end-of-file). Fixed with a seek after loading (in the SDK patch); the file grew from 10,176 to 40,338 bytes in the next run. Effect on the hitches not yet confirmed by the user.
+- Pipeline creation does not explain every dip (55-58 s of the same run had few).
+
+Crash found on the way: `Call to invalid or unregistered function at guest address 0x8220B810`, twice, entering a race from a cutscene menu. The address is inside sub_8220B790 and reached only through a pointer; added to `config/runtime_discovered.toml`.
+
+Note: the installed `rexglue.exe` has the codegen templates built in, from before the PS5 rule was added to `pch_h.inja`, so each codegen on the PC rewrites `generated/default/mcla_pch.h` without `|| REX_PLATFORM_PS5`. `ps5/game/build.sh` refuses to build then; add it back by hand (or rebuild the SDK's tools).
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

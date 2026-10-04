@@ -1997,6 +1997,105 @@ index ec0df7c..47926fb 100644
    FireWatches(page_first, page_last, false);
  
    return std::make_pair(page_first << page_size_log2_, (page_last - page_first + 1)
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..c3e3f92 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
++#include <chrono>
+ #include <algorithm>
+ #include <array>
+ #include <cstdint>
+@@ -71,6 +73,20 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
+ 
+ namespace rex::graphics::vulkan {
+ 
++// Submissions and blocking fence waits so far, with the time spent in each
++// (microseconds), for performance diagnosis: {submits, submit us, waits, wait us}.
++std::atomic<uint64_t> g_submission_counters[4];
++void SubmissionCounters(uint64_t out[4]) {
++  for (int i = 0; i < 4; ++i) {
++    out[i] = g_submission_counters[i].load(std::memory_order_relaxed);
++  }
++}
++static uint64_t CounterNowMicros() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++
+ namespace {
+ 
+ // glslang default built-in resource limits.
+@@ -4970,9 +4986,13 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+     // defined by vkQueueSubmit additionally include in the first
+     // synchronization scope all commands that occur earlier in submission
+     // order."
++    const uint64_t wait_start_us = CounterNowMicros();
+     VkResult wait_result =
+         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
+                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
++    g_submission_counters[2].fetch_add(1, std::memory_order_relaxed);
++    g_submission_counters[3].fetch_add(CounterNowMicros() - wait_start_us,
++                                       std::memory_order_relaxed);
+     if (wait_result == VK_SUCCESS) {
+       fences_awaited += await_submission - submission_completed_;
+     } else {
+@@ -5417,7 +5437,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+     {
+       ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
+           vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0);
++      const uint64_t submit_start_us = CounterNowMicros();
+       submit_result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
++      g_submission_counters[0].fetch_add(1, std::memory_order_relaxed);
++      g_submission_counters[1].fetch_add(CounterNowMicros() - submit_start_us,
++                                         std::memory_order_relaxed);
+     }
+     if (submit_result != VK_SUCCESS) {
+       REXGPU_ERROR("Failed to submit a Vulkan command buffer");
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..6181d9e 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -702,6 +702,17 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
+            pipeline_storage_file_);
+   }
+ 
++  // The file was opened for update and has just been read. C requires a
++  // positioning call between reading and writing such a stream; without one
++  // the PS5 C library fails every later write (the descriptions read end
++  // exactly at the end of the file, so no read ever hit end-of-file), and no
++  // pipeline was stored after the first run. The file is in append mode, so
++  // this moves nothing.
++  rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_END);
++  if (shader_storage_file_) {
++    rex::filesystem::Seek(shader_storage_file_, 0, SEEK_END);
++  }
++
+   shader_storage_cache_root_ = cache_root;
+   shader_storage_title_id_ = title_id;
+ 
+@@ -3694,7 +3705,15 @@ void VulkanPipelineCache::StorageWriteThread() {
+ 
+     if (write_pipeline) {
+       assert_not_null(pipeline_storage_file_);
+-      fwrite(&pipeline_description, sizeof(pipeline_description), 1, pipeline_storage_file_);
++if (fwrite(&pipeline_description, sizeof(pipeline_description), 1,
++                 pipeline_storage_file_) != 1) {
++        static bool write_failure_logged = false;
++        if (!write_failure_logged) {
++          write_failure_logged = true;
++          REXGPU_WARN("Pipeline storage: writing a pipeline description failed; pipelines "
++                      "created in this run will not be stored");
++        }
++      }
+     }
+   }
+ }
 diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
 index 6788214..1ab1d11 100644
 --- a/src/graphics/vulkan/shared_memory.cpp
