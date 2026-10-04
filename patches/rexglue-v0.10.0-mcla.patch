@@ -53,10 +53,10 @@ index d876846..500ee36 100644
  struct clock_time_conversion {};
  
 diff --git a/include/rex/memory/utils.h b/include/rex/memory/utils.h
-index 8ccb52c..7095cab 100644
+index 8ccb52c..312180c 100644
 --- a/include/rex/memory/utils.h
 +++ b/include/rex/memory/utils.h
-@@ -152,6 +152,17 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+@@ -152,6 +152,33 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
                    size_t file_offset);
  bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length);
  
@@ -69,6 +69,22 @@ index 8ccb52c..7095cab 100644
 +bool ReleaseFileMappingRange(FileMappingHandle handle, void* base_address, size_t length);
 +// Number of Protect() calls made so far, for performance diagnosis.
 +uint64_t Ps5ProtectCallCount();
++// The same, by who asked: 0 anything else, 1 enabling write-watches, 2 a watch
++// being triggered (a guest write fault or the GPU writing guest memory),
++// 3 reconciling host page protection with guest pages smaller than a host
++// page, 4 the access-violation callback's stale-protection recovery.
++inline constexpr int kPs5ProtectSiteCount = 5;
++uint64_t Ps5ProtectCallCount(int site);
++// Set (through Ps5ProtectSiteScope) by the code about to call Protect(). A
++// function, not an extern thread_local: that would make a weak reference to
++// the variable's initialisation function, which a title cannot link.
++int& Ps5ProtectSite();
++struct Ps5ProtectSiteScope {
++  explicit Ps5ProtectSiteScope(int site) : slot(Ps5ProtectSite()), previous(slot) { slot = site; }
++  ~Ps5ProtectSiteScope() { slot = previous; }
++  int& slot;
++  int previous;
++};
 +#endif
 +
  inline size_t hash_combine(size_t seed) {
@@ -433,7 +449,7 @@ index 378aa4b..c28a596 100644
  namespace rex::thread {
  
 diff --git a/src/core/clock_posix.cpp b/src/core/clock_posix.cpp
-index 00f2382..e2f0450 100644
+index 00f2382..da2d9ea 100644
 --- a/src/core/clock_posix.cpp
 +++ b/src/core/clock_posix.cpp
 @@ -10,7 +10,7 @@
@@ -458,6 +474,20 @@ index 00f2382..e2f0450 100644
  namespace rex::chrono {
  
  uint64_t Clock::host_tick_frequency_platform() {
+@@ -25,6 +31,13 @@ uint64_t Clock::host_tick_frequency_platform() {
+   mach_timebase_info_data_t info;
+   mach_timebase_info(&info);
+   return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
++#elif REX_PLATFORM_PS5
++  // host_tick_count_platform() returns nanoseconds, so the frequency is one
++  // billion whatever the clock's resolution is. Deriving it from clock_getres
++  // is only right where the resolution is 1 ns: on the console it is 81 ns,
++  // which made guest time run 81 times too fast (seen as the game in fast
++  // forward once the frame rate rose above the per-frame clamp).
++  return 1000000000ull;
+ #else
+   timespec res;
+   int error = clock_getres(CLOCK_MONOTONIC_RAW, &res);
 diff --git a/src/core/dynlib_posix.cpp b/src/core/dynlib_posix.cpp
 index fcfd6c9..7ac7790 100644
 --- a/src/core/dynlib_posix.cpp
@@ -785,7 +815,7 @@ index 1ec7192..f4f06ef 100644
    return i != 0;
  }
 diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
-index b52bf39..89f4314 100644
+index b52bf39..6788d30 100644
 --- a/src/core/memory_posix.cpp
 +++ b/src/core/memory_posix.cpp
 @@ -9,6 +9,7 @@
@@ -805,7 +835,7 @@ index b52bf39..89f4314 100644
  #define rex_mmap64 mmap
  #define rex_ftruncate64 ftruncate
  #else
-@@ -57,9 +58,48 @@
+@@ -57,9 +58,49 @@
  // #include "xenia/base/main_android.h"
  #endif
  
@@ -842,6 +872,7 @@ index b52bf39..89f4314 100644
 +size_t g_direct_length = 0;
 +
 +std::atomic<uint64_t> g_ps5_protect_calls{0};
++std::atomic<uint64_t> g_ps5_protect_site_calls[kPs5ProtectSiteCount];
 +
 +bool DirectMemoryAvailable() {
 +  return &sceKernelAllocateDirectMemory && &sceKernelReleaseDirectMemory &&
@@ -854,7 +885,7 @@ index b52bf39..89f4314 100644
  // Convert a filesystem path to a valid shm_open name (must start with /, no other slashes).
  // macOS enforces a 31-character total limit, so long names are folded from the full path rather
  // than only the filename. This keeps equal filenames in different directories distinct.
-@@ -262,7 +302,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+@@ -262,7 +303,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
      // range uses mprotect to avoid clobbering the existing reservation. Do not
      // widen sub-host-page requests here - higher-level guest heaps must reconcile
      // all guest permissions sharing a host page first.
@@ -863,7 +894,7 @@ index b52bf39..89f4314 100644
    if (base_address != nullptr && allocation_type == AllocationType::kCommit) {
      const size_t host_page = page_size();
      const uintptr_t address = reinterpret_cast<uintptr_t>(base_address);
-@@ -284,7 +324,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+@@ -284,7 +325,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
    if (base_address) {
      flags |= MAP_FIXED;
    }
@@ -872,7 +903,7 @@ index b52bf39..89f4314 100644
    if (base_address) {
      flags |= MAP_FIXED_NOREPLACE;
    }
-@@ -365,6 +405,11 @@ bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* o
+@@ -365,6 +406,12 @@ bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* o
  #endif
  
    uint32_t prot = ToPosixProtectFlags(access);
@@ -880,11 +911,12 @@ index b52bf39..89f4314 100644
 +  // A protection change costs about 26 us on the console whatever its size, so
 +  // how many there are is worth knowing (see Ps5ProtectCallCount).
 +  g_ps5_protect_calls.fetch_add(1, std::memory_order_relaxed);
++  g_ps5_protect_site_calls[Ps5ProtectSite()].fetch_add(1, std::memory_order_relaxed);
 +#endif
    int ret = mprotect(base_address, length, prot);
    if (ret != 0) {
      REXSYS_ERROR("mprotect({}, 0x{:X}, {}) failed: {} ({})", base_address, length, prot,
-@@ -473,6 +518,37 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+@@ -473,6 +520,37 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
        return kFileMappingHandleInvalid;
    }
    oflag |= O_CREAT;
@@ -922,7 +954,7 @@ index b52bf39..89f4314 100644
    auto full_path = MakeShmName(path);
    int ret = shm_open(full_path.c_str(), oflag, 0777);
    if (ret < 0) {
-@@ -484,12 +560,24 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+@@ -484,12 +562,24 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
      return kFileMappingHandleInvalid;
    }
    return static_cast<FileMappingHandle>(ret);
@@ -948,7 +980,7 @@ index b52bf39..89f4314 100644
    auto full_path = MakeShmName(path);
    shm_unlink(full_path.c_str());
  #endif
-@@ -513,6 +601,25 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+@@ -513,6 +603,25 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
    }
  
    uint32_t prot = ToPosixProtectFlags(access);
@@ -974,7 +1006,7 @@ index b52bf39..89f4314 100644
    void* result = rex_mmap64(base_address, length, prot, flags, static_cast<int>(handle),
                              static_cast<off_t>(file_offset));
    if (result == MAP_FAILED) {
-@@ -529,8 +636,44 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+@@ -529,8 +638,55 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
  }
  
  bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length) {
@@ -987,8 +1019,19 @@ index b52bf39..89f4314 100644
  }
  
 +#if REX_PLATFORM_PS5
++int& Ps5ProtectSite() {
++  static thread_local int site = 0;
++  return site;
++}
++
 +uint64_t Ps5ProtectCallCount() {
 +  return g_ps5_protect_calls.load(std::memory_order_relaxed);
++}
++
++uint64_t Ps5ProtectCallCount(int site) {
++  return site >= 0 && site < kPs5ProtectSiteCount
++             ? g_ps5_protect_site_calls[site].load(std::memory_order_relaxed)
++             : 0;
 +}
 +
 +void* ReserveFileMappingRange(FileMappingHandle handle, size_t length) {
@@ -1444,7 +1487,7 @@ index fc46d86..5f57565 100644
  
  if(WIN32)
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
-index 76cc877..e3408b8 100644
+index 76cc877..0de733a 100644
 --- a/src/system/xmemory.cpp
 +++ b/src/system/xmemory.cpp
 @@ -20,6 +20,11 @@
@@ -1548,7 +1591,27 @@ index 76cc877..e3408b8 100644
  
  int Memory::MapViews(uint8_t* mapping_base) {
    assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
-@@ -1883,6 +1917,16 @@ void PhysicalHeap::Initialize(memory::Memory* memory, uint8_t* membase, HeapType
+@@ -533,6 +567,9 @@ runtime::MMIORange* Memory::LookupVirtualMappedRange(uint32_t virtual_address) {
+ 
+ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> global_lock_locked_once,
+                                      void* host_address, bool is_write) {
++#if REX_PLATFORM_PS5
++  rex::memory::Ps5ProtectSiteScope ps5_protect_site_scope(4);
++#endif
+   // Access via physical_membase_ is special, when need to bypass everything
+   // (for instance, for a data provider to actually write the data) so only
+   // triggering callbacks on virtual memory regions.
+@@ -915,6 +952,9 @@ std::unique_lock<std::recursive_mutex> BaseHeap::AcquireHostPageReconcileLock()
+ }
+ 
+ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_number) {
++#if REX_PLATFORM_PS5
++  rex::memory::Ps5ProtectSiteScope ps5_protect_site_scope(3);
++#endif
+   const uint32_t host_page_size = memory_->system_page_size_;
+   if (page_size_ >= host_page_size) {
+     return true;
+@@ -1883,6 +1923,16 @@ void PhysicalHeap::Initialize(memory::Memory* memory, uint8_t* membase, HeapType
                         host_address_offset);
    parent_heap_ = parent_heap;
    system_page_size_ = uint32_t(rex::memory::page_size());
@@ -1565,7 +1628,27 @@ index 76cc877..e3408b8 100644
  
    system_page_count_ =
        (size_t(heap_size_) + host_address_offset + (system_page_size_ - 1)) / system_page_size_;
-@@ -2338,13 +2382,16 @@ std::unique_lock<std::recursive_mutex> PhysicalHeap::AcquireHostPageReconcileLoc
+@@ -2065,6 +2115,9 @@ bool PhysicalHeap::Protect(uint32_t address, uint32_t size, uint32_t protect,
+ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
+                                          bool enable_invalidation_notifications,
+                                          bool enable_data_providers) {
++#if REX_PLATFORM_PS5
++  rex::memory::Ps5ProtectSiteScope ps5_protect_site_scope(1);
++#endif
+   // TODO(Triang3l): Implement data providers.
+   assert_false(enable_data_providers);
+   if (!enable_invalidation_notifications && !enable_data_providers) {
+@@ -2175,6 +2228,9 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
+ bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> global_lock_locked_once,
+                                     uint32_t virtual_address, uint32_t length, bool is_write,
+                                     bool unwatch_exact_range, bool unprotect) {
++#if REX_PLATFORM_PS5
++  rex::memory::Ps5ProtectSiteScope ps5_protect_site_scope(2);
++#endif
+   // TODO(Triang3l): Support read watches.
+   assert_true(is_write);
+   if (!is_write) {
+@@ -2338,13 +2394,16 @@ std::unique_lock<std::recursive_mutex> PhysicalHeap::AcquireHostPageReconcileLoc
  }
  
  bool PhysicalHeap::IsHostPageWriteWatched(uint32_t host_page_number) const {

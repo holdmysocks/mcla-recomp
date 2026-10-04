@@ -611,6 +611,21 @@ int main() {
         Line("STATS %d s: %llu protection changes/s, %llu faults/s", second,
              static_cast<unsigned long long>((protects - last_protects) / 5),
              static_cast<unsigned long long>((faults - last_faults) / 5));
+        // And who asked for the protection changes.
+        static uint64_t last_site[rex::memory::kPs5ProtectSiteCount] = {};
+        uint64_t per_second[rex::memory::kPs5ProtectSiteCount];
+        for (int site = 0; site < rex::memory::kPs5ProtectSiteCount; ++site) {
+          const uint64_t count = rex::memory::Ps5ProtectCallCount(site);
+          per_second[site] = (count - last_site[site]) / 5;
+          last_site[site] = count;
+        }
+        Line("STATS %d s: by caller/s: watch enable %llu, watch trigger %llu, host page sync %llu, "
+             "stale recovery %llu, other %llu",
+             second, static_cast<unsigned long long>(per_second[1]),
+             static_cast<unsigned long long>(per_second[2]),
+             static_cast<unsigned long long>(per_second[3]),
+             static_cast<unsigned long long>(per_second[4]),
+             static_cast<unsigned long long>(per_second[0]));
         last_protects = protects;
         last_faults = faults;
       }

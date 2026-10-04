@@ -185,7 +185,11 @@ Changes tried:
 |---|---|
 | Emulated console vsync off (as the desktop host does) | None felt |
 | `physical_watch_granularity` = 64 KiB (new runtime setting; write-watch units of 64 KiB, not the 16 KiB host page) | Confirmed active; no change in the present rate or in how it felt. Kept as a setting |
-| Global critical region spins before sleeping on PS5 (`AcquireGlobalLockSpinning` in `rex/thread/mutex.h`) | Built and uploaded; **not yet run** |
+| Global critical region spins before sleeping on PS5 (`AcquireGlobalLockSpinning` in `rex/thread/mutex.h`) | **Helped.** The GPU thread's 43% blocked in `recursive_mutex::lock` is gone (5% in `try_lock`); protection changes and faults a second roughly doubled (12,000 and 1,700), presents rose from 8-11 to 12-14 a second and later to 19-30. User: slightly better frame rate. A thread that slept on that lock was costing far more to wake than the wait was worth; the tight-loop test in step 13 could not show it |
+
+**Protection changes by caller** (host counters, after the lock change): about 7,000 a second enabling write-watches, about 2,300 from watches being triggered, 1,300 faults; none from host-page reconciliation or stale-protection recovery.
+
+**The clock was 81 times fast (found 2026-10-04 from the user's "fast forward" report).** `Clock::host_tick_frequency_platform` derived the tick frequency from `clock_getres`, which is right only where the resolution is 1 ns. On the console it is 81 ns, while the tick count is in nanoseconds, so guest time ran 81 times too fast. The game's per-frame clamp of 0.125 s hid it: at 8 frames a second the clamp gives exactly real time, at 14 it gives 1.75x, at 30 it gives 3.75x, which is what appeared once the lock change raised the frame rate. It also explains the fast intro movies and the odd physics (every frame stepping by the maximum), and the emulated 60 Hz vblank and every timed wait were firing 81 times too often. Fixed in `clock_posix.cpp`: on PS5 the frequency is 1e9. **Not yet run**; all the performance figures above were taken with the wrong clock and need taking again.
 
 The title's name and art: `ps5/make_title_art.py` reads the dashboard art from the user's own `nxeart` (an STFS package) and writes a background and a tile (the corner of the background that carries the game's logo) to an ignored folder; `ps5/title_build.sh` converts them when `ART_DIR` is set. The shell caches a title's name and art at registration, so the tile has to be deleted and re-registered to show a change.
 
