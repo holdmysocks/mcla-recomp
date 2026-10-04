@@ -47,7 +47,9 @@
 #include <thread>
 
 #include <rex/cvar.h>
+#include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
+#include <rex/input/nop/nop_input_driver.h>
 #include <rex/kernel/crt/heap.h>
 #include <rex/kernel/init.h>
 #include <rex/logging.h>
@@ -67,6 +69,9 @@
 // a payload g_mcla_log_fd is standard output, the loader socket.
 #include "title_log.h"
 #include "log_fd_sink.h"
+#ifdef MCLA_TITLE
+#include "ps5_pad_input.h"
+#endif
 
 #ifndef MCLA_STAGE
 #define MCLA_STAGE 4
@@ -82,6 +87,14 @@ REXCVAR_DECLARE(uint32_t, rexcrt_heap_size_mb);
 
 std::unique_ptr<rex::system::IAudioSystem> CreateMclaAudioSystem(
     rex::runtime::FunctionDispatcher* function_dispatcher);
+
+// The console's shell draws its launch splash over a title until the title
+// asks for it to be hidden: frames presented before that are flipped but not
+// seen. A plain import, and only in a title: the title converter leaves a
+// weak import unbound (the call was silently skipped when it was one).
+#ifdef MCLA_TITLE
+extern "C" int sceSystemServiceHideSplashScreen(void);
+#endif
 
 // The Xenos GPU plugin's factory. On the other platforms the plugin is a
 // shared library found by name at run time; here it is linked in.
@@ -336,6 +349,13 @@ int main() {
     }
     NEXT("attach the presenter to the window (display surface and swapchain)");
     window->SetPresenter(graphics->presenter());
+#ifdef MCLA_TITLE
+    {
+      NEXT("hide the console's launch splash");
+      Line("sceSystemServiceHideSplashScreen returned 0x%08X",
+           static_cast<unsigned>(sceSystemServiceHideSplashScreen()));
+    }
+#endif
 
     NEXT("run the message loop for %d s, requesting a repaint every second", MCLA_RUN_SECONDS);
     std::thread ticker([&app_context, &window]() {
@@ -386,6 +406,13 @@ int main() {
     return Finish("no window", 10);
   }
   window->SetPresenter(graphics->presenter());
+#ifdef MCLA_TITLE
+  {
+    NEXT("hide the console's launch splash");
+    Line("sceSystemServiceHideSplashScreen returned 0x%08X",
+         static_cast<unsigned>(sceSystemServiceHideSplashScreen()));
+  }
+#endif
 #endif
 
   NEXT("construct rex::Runtime");
@@ -404,7 +431,24 @@ int main() {
   // The game asks about controllers as soon as it has graphics, and the kernel
   // calls it uses assume an input system exists. The default one, as on the
   // desktop; whether it finds a controller on the console is P7.
+#ifdef MCLA_TITLE
+  // The console's own pad library (ps5_pad_input.h); SDL has no gamepad
+  // backend here. If no controller can be opened, the stand-in driver keeps
+  // an idle one present so the game does not wait for a controller forever.
+  config.input_factory = [](bool) -> std::unique_ptr<rex::system::IInputSystem> {
+    auto input = std::make_unique<rex::input::InputSystem>(nullptr);
+    auto pad = std::make_unique<Ps5PadInputDriver>();
+    if (pad->Setup() == rex::X_STATUS(0)) {
+      input->AddDriver(std::move(pad));
+    } else {
+      input->AddDriver(std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 0));
+    }
+    input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
+    return input;
+  };
+#else
   config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+#endif
 #else
   // No graphics system and no input system: P5 and P7.
 #endif
@@ -471,7 +515,7 @@ int main() {
   std::thread ticker([&app_context, &runtime]() {
     for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
-      Line("alive: %d s", second);
+      if (second <= 30 || second % 30 == 0) Line("alive: %d s", second);
       // Twice, a few seconds apart: a thread at the same place both times is
       // stuck there, one that has moved is running.
       if (second == 4 || second == 8) {

@@ -1538,7 +1538,7 @@ index 914b311..cfa4e0e 100644
  
  #define XE_UI_VULKAN_FUNCTION(name)                                                            \
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..072cc3f 100644
+index 23645ef..38bfccc 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -45,6 +45,9 @@
@@ -1668,6 +1668,51 @@ index 23645ef..072cc3f 100644
  #endif
        default:
          assert_unhandled_case(surface_type);
+@@ -1529,6 +1628,18 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
+ }
+ 
+ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
++#if REX_PLATFORM_PS5
++  // Nothing can be seen of presentation on the console except the screen, so
++  // the first few paints and then one in every 300 are logged: that it was
++  // entered, what acquire returned, what present returned.
++  static std::atomic<uint64_t> ps5_paint_count{0};
++  const uint64_t ps5_paint_index = ps5_paint_count.fetch_add(1, std::memory_order_relaxed);
++  const bool ps5_log_paint = ps5_paint_index < 6 || ps5_paint_index % 300 == 0;
++  if (ps5_log_paint) {
++    REXLOG_INFO("VulkanPresenter: paint {} begins (UI drawers {})", ps5_paint_index,
++                execute_ui_drawers);
++  }
++#endif
+   // Begin the submission in place of the one not currently potentially used on
+   // the GPU.
+   uint64_t current_paint_submission_index =
+@@ -1572,6 +1683,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+   VkResult acquire_result =
+       dfn.vkAcquireNextImageKHR(device, paint_context_.swapchain, UINT64_MAX, acquire_semaphore,
+                                 VK_NULL_HANDLE, &swapchain_image_index);
++#if REX_PLATFORM_PS5
++  if (ps5_log_paint) {
++    REXLOG_INFO("VulkanPresenter: paint {} acquire returned {}, image {}", ps5_paint_index,
++                static_cast<int>(acquire_result), swapchain_image_index);
++  }
++#endif
+   switch (acquire_result) {
+     case VK_SUCCESS:
+     case VK_SUBOPTIMAL_KHR:
+@@ -2242,6 +2359,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+         vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
+     present_result = dfn.vkQueuePresentKHR(queue_acquisition.queue(), &present_info);
+   }
++#if REX_PLATFORM_PS5
++  if (ps5_log_paint) {
++    REXLOG_INFO("VulkanPresenter: paint {} present returned {}", ps5_paint_index,
++                static_cast<int>(present_result));
++  }
++#endif
+   switch (present_result) {
+     case VK_SUCCESS:
+       return PaintResult::kPresented;
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
 index 2251429..b883bf7 100644
 --- a/src/ui/window_sdl.cpp

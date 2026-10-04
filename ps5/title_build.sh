@@ -74,6 +74,11 @@ stub() {
 }
 stub libSceAgc vendor/ps5/sdk/stubs/agc_canary_link_stub.c
 stub libSceAgcDriver vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
+# Ours: the splash-screen call, which the SDK's libSceSystemService stub lacks.
+tr -d '\r' < "$(dirname -- "${BASH_SOURCE[0]}")/title_stub_system_service.c" > "$work/title_stub_system_service.c"
+cc -std=c11 -O2 -fPIC -c "$work/title_stub_system_service.c" -o "$work/obj/libSceSystemService_stub.o"
+"$sdk_root/bin/prospero-lld" --shared -soname "libSceSystemService.prx" \
+    -o "$work/stubs/libSceSystemService.so" "$work/obj/libSceSystemService_stub.o"
 
 # shellcheck disable=SC1091
 source "$root/tools/radv-link.sh"
@@ -98,7 +103,7 @@ set -- "$work/obj/title_support.o" "$@"
     --version-script "$native/app-symbols.map" --exclude-libs=ALL \
     -e _start -o "$work/llvm-pie.elf" \
     "$work/obj/app_crt.o" "$work/obj/app_cpp_runtime.o" "$@" \
-    "$work/stubs/libSceAgc.so" "$work/stubs/libSceAgcDriver.so" \
+    "$work/stubs/libSceAgc.so" "$work/stubs/libSceAgcDriver.so" "$work/stubs/libSceSystemService.so" \
     "${radv_link_inputs[@]}" \
     --as-needed "$sdk_root"/target/lib/*.so
 
@@ -111,7 +116,8 @@ readelf -lW "$work/llvm-pie.elf" | grep -E '^ +(LOAD|DYNAMIC)'
 
 "$tool" link --in "$work/llvm-pie.elf" --out "$work/eboot.elf" \
     --stub-dir "$sdk_root/target/lib" --stub "$work/stubs/libSceAgc.so" \
-    --stub "$work/stubs/libSceAgcDriver.so" --module-sdk "$module_sdk" \
+    --stub "$work/stubs/libSceAgcDriver.so" --stub "$work/stubs/libSceSystemService.so" \
+    --module-sdk "$module_sdk" \
     --companion-sdk "$companion_sdk" --file-name eboot.elf
 
 app="$root/dist/$title_id"
