@@ -137,13 +137,14 @@ Why an immediate fault in a title took the whole console down, rather than just 
 |---|---|
 | `PPSA99779`, arena step 0 (startup only), first build | Connected to the log receiver and exited; no text arrived. Console unaffected |
 | Same, log written to the socket directly | Pass: all lines received. Console unaffected |
+| Step 8: the three fault cases through the runtime's handler | Pass, 12 of 12. The signal context is at the same offset in a title. The title image is at 0x400000 (a payload's is at 0x200000000) |
 
 Two things learned about titles from these runs:
 
 - **`dup2` onto descriptors 1 and 2 fails with `EPERM` in a title.** Standard output cannot be redirected to a socket, so a title's log has to be written to the connection itself (`g_mcla_log_fd` in `ps5/title_log.h`). The runtime's log will need a sink of its own for the game title.
 - A title can listen on a TCP port and accept a connection from the PC before `main` runs.
 
-The memory and fault steps have not been run as a title yet. Steps 8 (5 to 7 together) and 9 (1 to 4 together) exist for that.
+The memory steps have not been run as a title yet (step 9 runs 1 to 4 together).
 
 Rules adopted for further console runs:
 
