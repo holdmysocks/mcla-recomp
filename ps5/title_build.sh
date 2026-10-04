@@ -96,7 +96,9 @@ tr -d '\r' < "$here/title_support.c" > "$work/title_support.c"
 cc -std=c11 -O2 -Wall -Wextra -fPIC -ffunction-sections -c "$work/title_support.c" -o "$work/obj/title_support.o"
 {
     printf '{\n    local:\n'
-    for name in isatty link symlink readlink pathconf mkstemp getresuid getresgid timegm; do
+    # clock_gettime is not null: it is replaced because it is a system call here
+    # and the driver calls it for every draw (title_support.c).
+    for name in isatty link symlink readlink pathconf mkstemp getresuid getresgid timegm clock_gettime; do
         radv_link_flags+=("--defsym=$name=mcla_title_$name")
         printf '        %s;\n' "$name"
     done

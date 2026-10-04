@@ -106,3 +106,122 @@ time_t mcla_title_timegm(struct tm* value) {
   const long days = era * 146097 + day_of_era - 719468;
   return (time_t)days * 86400 + value->tm_hour * 3600L + value->tm_min * 60L + value->tm_sec;
 }
+
+/* clock_gettime without the system call.
+ *
+ * On the console clock_gettime is a system call, and the Vulkan driver reads
+ * the monotonic clock on its drawing and waiting paths (os_time_get_nano):
+ * with 13,000 draws a frame the GPU command thread spent 19% of its time in
+ * it. The monotonic clocks are answered here from the cycle counter, tied to
+ * the real clock again every 100 ms so the two stay within microseconds of
+ * each other (timed waits take absolute times on the kernel's clock). Every
+ * other clock id, and everything if the counter's rate looks wrong, goes to
+ * the system. */
+
+#include <stdatomic.h>
+#include <stdint.h>
+
+int sceKernelClockGettime(int clock_id, struct timespec* value);
+
+static uint64_t mcla_cycles(void) {
+  uint32_t low, high;
+  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+  return ((uint64_t)high << 32) | low;
+}
+
+static uint64_t mcla_system_monotonic_ns(void) {
+  struct timespec value;
+  if (sceKernelClockGettime(CLOCK_MONOTONIC, &value) != 0) {
+    return 0;
+  }
+  return (uint64_t)value.tv_sec * 1000000000u + (uint64_t)value.tv_nsec;
+}
+
+enum { kClockUnset, kClockStarting, kClockReady, kClockSystemOnly };
+static _Atomic int mcla_clock_state = kClockUnset;
+/* Written under mcla_clock_updating with mcla_clock_version odd; readers
+ * retry if the version moved. */
+static _Atomic uint64_t mcla_clock_version;
+static atomic_flag mcla_clock_updating = ATOMIC_FLAG_INIT;
+static uint64_t mcla_clock_cycles0, mcla_clock_ns0;  /* the current anchor */
+static uint64_t mcla_clock_first_cycles, mcla_clock_first_ns;
+static uint64_t mcla_clock_ns_per_cycle;  /* 32.32 fixed point */
+static uint64_t mcla_clock_resync_cycles; /* cycles in 100 ms */
+static _Atomic uint64_t mcla_clock_last_ns;
+
+static void mcla_clock_start(void) {
+  const uint64_t ns0 = mcla_system_monotonic_ns();
+  const uint64_t cycles0 = mcla_cycles();
+  uint64_t ns1 = ns0, cycles1 = cycles0;
+  while (ns0 && ns1 && ns1 - ns0 < 5000000u) {
+    ns1 = mcla_system_monotonic_ns();
+    cycles1 = mcla_cycles();
+  }
+  const uint64_t cycles = cycles1 - cycles0;
+  /* Between 100 MHz and 10 GHz, or not a counter to rely on. */
+  if (!ns0 || !ns1 || cycles < 500000u || cycles > 50000000u) {
+    atomic_store(&mcla_clock_state, kClockSystemOnly);
+    return;
+  }
+  mcla_clock_first_cycles = cycles0;
+  mcla_clock_first_ns = ns0;
+  mcla_clock_cycles0 = cycles1;
+  mcla_clock_ns0 = ns1;
+  mcla_clock_ns_per_cycle = (uint64_t)((((unsigned __int128)(ns1 - ns0)) << 32) / cycles);
+  mcla_clock_resync_cycles = cycles * 20u;
+  atomic_store(&mcla_clock_last_ns, ns1);
+  atomic_store(&mcla_clock_state, kClockReady);
+}
+
+static uint64_t mcla_clock_monotonic_ns(void) {
+  uint64_t cycles0, ns0, ns_per_cycle, version;
+  do {
+    version = atomic_load(&mcla_clock_version);
+    cycles0 = mcla_clock_cycles0;
+    ns0 = mcla_clock_ns0;
+    ns_per_cycle = mcla_clock_ns_per_cycle;
+  } while ((version & 1u) || atomic_load(&mcla_clock_version) != version);
+  const uint64_t elapsed = mcla_cycles() - cycles0;
+  uint64_t ns = ns0 + (uint64_t)(((unsigned __int128)elapsed * ns_per_cycle) >> 32);
+  if (elapsed > mcla_clock_resync_cycles && !atomic_flag_test_and_set(&mcla_clock_updating)) {
+    const uint64_t real = mcla_system_monotonic_ns();
+    const uint64_t cycles = mcla_cycles();
+    if (real) {
+      atomic_fetch_add(&mcla_clock_version, 1);
+      mcla_clock_cycles0 = cycles;
+      mcla_clock_ns0 = real;
+      /* The rate over the whole run so far: ever more exact. */
+      mcla_clock_ns_per_cycle = (uint64_t)((((unsigned __int128)(real - mcla_clock_first_ns)) << 32) /
+                                           (cycles - mcla_clock_first_cycles));
+      atomic_fetch_add(&mcla_clock_version, 1);
+      ns = real;
+    }
+    atomic_flag_clear(&mcla_clock_updating);
+  }
+  /* Never backwards, whichever thread asks and whatever a resync did. */
+  uint64_t last = atomic_load(&mcla_clock_last_ns);
+  while (ns > last && !atomic_compare_exchange_weak(&mcla_clock_last_ns, &last, ns)) {
+  }
+  return ns > last ? ns : last;
+}
+
+int mcla_title_clock_gettime(clockid_t clock_id, struct timespec* value) {
+  if (value && (clock_id == CLOCK_MONOTONIC || clock_id == CLOCK_MONOTONIC_PRECISE ||
+                clock_id == CLOCK_MONOTONIC_FAST)) {
+    int state = atomic_load(&mcla_clock_state);
+    if (state == kClockUnset) {
+      int expected = kClockUnset;
+      if (atomic_compare_exchange_strong(&mcla_clock_state, &expected, kClockStarting)) {
+        mcla_clock_start();
+      }
+      state = atomic_load(&mcla_clock_state);
+    }
+    if (state == kClockReady) {
+      const uint64_t ns = mcla_clock_monotonic_ns();
+      value->tv_sec = (time_t)(ns / 1000000000u);
+      value->tv_nsec = (long)(ns % 1000000000u);
+      return 0;
+    }
+  }
+  return sceKernelClockGettime(clock_id, value) == 0 ? 0 : -1;
+}
