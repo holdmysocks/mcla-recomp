@@ -26,7 +26,7 @@ tr -d '\r' < "$here/../../log_fd_sink.h" > "$work/log_fd_sink.h"
 
 # Compile with exactly the flags the runtime's own sources were built with.
 ninja -C "$runtime_build" -t commands rexruntime > "$work/commands.txt"
-command=$(grep 'xmemory\.cpp\.o ' "$work/commands.txt" | head -1)
+command=$(grep -m1 'xmemory\.cpp\.o ' "$work/commands.txt")
 flags=$(printf '%s' "$command" | sed -E 's/^.*prospero-clang\+\+ //; s/ -o [^ ]+\.o -c [^ ]+$//; s/ -MD -MT [^ ]+ -MF [^ ]+//')
 
 # The runtime is built with the large code model, so nearly all of its code and

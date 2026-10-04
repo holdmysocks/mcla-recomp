@@ -43,7 +43,9 @@ done
 # The runtime's own defines and include paths, taken from its build; its
 # precompiled header and float model are not wanted for the game code.
 ninja -C "$runtime_build" -t commands rexruntime > "$work/commands.txt"
-command=$(grep 'xmemory\.cpp\.o ' "$work/commands.txt" | head -1)
+# grep -m1, not "grep | head -1": under pipefail the latter fails now and then,
+# when head exits before grep has finished writing.
+command=$(grep -m1 'xmemory\.cpp\.o ' "$work/commands.txt")
 inherited=$(printf '%s' "$command" | tr ' ' '\n' | grep -E '^(--sysroot=|-D|-I)' | grep -v -E '^-DNDEBUG$' | tr '\n' ' ')
 inherited_system=$(printf '%s' "$command" | grep -o -E -- '-isystem [^ ]+' | tr '\n' ' ')
 # -ffp-contract=off: the desktop build targets SSE4.1 and so never fuses a
@@ -113,6 +115,10 @@ for stage in "${stages[@]}"; do
     # A 20 s sampling profile starting this many seconds into the run
     # (ps5/profile_report.py reads it from the title log).
     [ -z "${MCLA_PROFILE_AT:-}" ] || extra="$extra -DMCLA_PROFILE_AT=$MCLA_PROFILE_AT"
+    # Tuning of the write-tracking units (see main_ps5.cpp); defaults 65536 and 18.
+    [ -z "${MCLA_WATCH_GRANULARITY:-}" ] || extra="$extra -DMCLA_WATCH_GRANULARITY=$MCLA_WATCH_GRANULARITY"
+    [ -z "${MCLA_REQUEST_GRANULARITY_LOG2:-}" ] || extra="$extra -DMCLA_REQUEST_GRANULARITY_LOG2=$MCLA_REQUEST_GRANULARITY_LOG2"
+    [ -z "${MCLA_HOT_PAGE_FAULTS:-}" ] || extra="$extra -DMCLA_HOT_PAGE_FAULTS=$MCLA_HOT_PAGE_FAULTS"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
     if [ -n "${TITLE:-}" ]; then
         # As an installable title, linked with the Vulkan driver, log over TCP.

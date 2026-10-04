@@ -51,9 +51,14 @@ param["localizedParameters"]["en-US"]["titleName"] = name
 json.dump(param, open(sys.argv[2], "w"), indent=2)
 PY
 
-# The linker script: theirs, plus the large-model sections.
+# The linker script: theirs, plus the large-model sections. Also SDL's
+# .note.dlopen: as an orphan it lands after the relocation tables, at the very
+# end of the segment the converter appends its process parameters to, and the
+# converter then needs the gap up to the next page to be large enough, which
+# it is or is not by chance ("LLVM layout leaves no room for PS5 process
+# parameters"). With the other read-only data it is out of the way.
 sed -E 's/\*\(\.text \.text\.\*\)/*(.text .text.* .ltext .ltext.* __lcxx_override)/;
-        s/\*\(\.rodata \.rodata\.\*\)/*(.rodata .rodata.* .lrodata .lrodata.*)/;
+        s/\*\(\.rodata \.rodata\.\*\)/*(.rodata .rodata.* .lrodata .lrodata.* .note.dlopen)/;
         s/\*\(\.data \.data\.\*\)/*(.data .data.* .ldata .ldata.*)/;
         s/\*\(\.bss \.bss\.\*\)/*(.bss .bss.* .lbss .lbss.*)/' \
     "$native/ps5-pie.ld" > "$work/ld/ps5-pie.ld"

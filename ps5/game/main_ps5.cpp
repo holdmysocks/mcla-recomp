@@ -463,11 +463,27 @@ int main() {
   // step 13), and the GPU emulation was spending a quarter of its thread on
   // them: watch guest physical memory in 64 KiB units, not 16 KiB host pages.
 #ifndef MCLA_WATCH_GRANULARITY
-#define MCLA_WATCH_GRANULARITY 65536
+#define MCLA_WATCH_GRANULARITY 0
 #endif
 #define MCLA_STRINGIZE_(x) #x
 #define MCLA_STRINGIZE(x) MCLA_STRINGIZE_(x)
   rex::cvar::SetFlagByName("physical_watch_granularity", MCLA_STRINGIZE(MCLA_WATCH_GRANULARITY));
+  // And make re-watching as coarse as invalidation already is: requests for
+  // guest memory are widened to 256 KiB chunks, so a fault is followed by one
+  // protection change and not one per draw that uses the area.
+#ifndef MCLA_REQUEST_GRANULARITY_LOG2
+#define MCLA_REQUEST_GRANULARITY_LOG2 18
+#endif
+  rex::cvar::SetFlagByName("shared_memory_request_granularity_log2",
+                           MCLA_STRINGIZE(MCLA_REQUEST_GRANULARITY_LOG2));
+  // Memory the game rewrites every frame (dynamic vertex data) is not worth
+  // watching at all here: after a few write faults in a second a page is hot
+  // for two seconds, not watched and simply uploaded when a draw uses it. The
+  // watch unit is the host page again so that a hot page is exactly that.
+#ifndef MCLA_HOT_PAGE_FAULTS
+#define MCLA_HOT_PAGE_FAULTS 4
+#endif
+  rex::cvar::SetFlagByName("shared_memory_hot_page_faults", MCLA_STRINGIZE(MCLA_HOT_PAGE_FAULTS));
   rex::ui::SDLWindowedAppContext app_context;
   if (!app_context.Initialize()) {
     return Finish("the SDL application context did not initialise", 9);

@@ -193,6 +193,27 @@ Changes tried:
 
 The title's name and art: `ps5/make_title_art.py` reads the dashboard art from the user's own `nxeart` (an STFS package) and writes a background and a tile (the corner of the background that carries the game's logo) to an ignored folder; `ps5/title_build.sh` converts them when `ART_DIR` is set. The shell caches a title's name and art at registration, so the tile has to be deleted and re-registered to show a change.
 
+### Frame rate work after the clock fix (2026-10-04)
+
+All figures in game, driving, from the host's counters and present log.
+
+| Build | Protection changes/s | Faults/s | Presents/s | User |
+|---|---|---|---|---|
+| Clock fixed | 15,600 | 1,800 | 16-17 | physics right, game slow |
+| + requests widened to 256 KiB (`shared_memory_request_granularity_log2` = 18) | 9,700 | 2,700 | 17-18 | "much better" (steadier, by the numbers not much faster) |
+| + hot pages (`shared_memory_hot_page_faults` = 4), watch unit back to the host page | 3,500 | 480 | about 16 | the same; no visual faults |
+| + cycle-counter clock | 4,000 | 500 | 20-25 | the same or so |
+
+What each is:
+
+- **Widened requests.** A write fault invalidates the whole 64-page block around it (1 MiB with 16 KiB pages), but each draw then uploads and re-watches only its own pages, so one fault was followed by a protection change per draw. Requests are widened to 256 KiB chunks so the invalid pages of a chunk are uploaded and watched in one go.
+- **Hot pages.** A page that takes 4 write faults within about a second is hot for 2 s: not marked valid, not watched, uploaded each time a draw asks for it (only where the request as made covers it, not where widening does), and watches on it are fired at each upload so a texture loaded from it cannot go stale. Pages the GPU wrote are never treated this way.
+- **The clock.** `clock_gettime` is a system call on the console. Hot-page handling asks the time on every request, and the profile then showed the GPU command thread 30% in `QueryHostUptimeMillis`. `host_tick_count_platform` now reads the cycle counter (`rdtsc`), calibrated once over 20 ms against `CLOCK_MONOTONIC`, with the system call as the fallback if the rate found is not between 100 MHz and 10 GHz. This makes every clock read in the runtime cheap, not only the new ones.
+
+Profile after all four (partial, 132 samples): GPU command thread 28% in system calls, the rest spread over real work (`UploadRanges` 17%, `UpdateBindings` 8%, driver calls about 13%, `Protect` 5%); main guest thread 36% in the fence wait. No single dominant cost left on the GPU thread.
+
+Also fixed along the way: the title converter failed with "LLVM layout leaves no room for PS5 process parameters" when SDL's orphan `.note.dlopen` section happened to end close to a page boundary (now placed with `.rodata` by `ps5/title_build.sh`; the title is 87 MB, was 94 MB), and `grep | head -1` under `pipefail` made the build scripts fail now and then (`grep -m1`).
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

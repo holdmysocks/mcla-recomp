@@ -52,6 +52,34 @@ index d876846..500ee36 100644
  template <class, class>
  struct clock_time_conversion {};
  
+diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
+index 4d85a2b..e46e9f1 100644
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -176,6 +176,23 @@ class SharedMemory {
+   std::vector<uint64_t> system_page_flags_valid_and_gpu_written_;
+   uint32_t num_system_page_flags_ = 0;
+ 
++  // Hot pages (shared_memory_hot_page_faults): a page the guest keeps writing
++  // to is, for a while, neither marked valid nor watched; it is uploaded every
++  // time it is requested instead. page_heat_ counts recent write faults per
++  // page; page_hot_until_ms_ is when a hot page goes back to being tracked.
++  std::vector<uint8_t> page_heat_;
++  std::vector<uint32_t> page_hot_until_ms_;
++  uint32_t page_heat_decay_ms_ = 0;
++  uint32_t page_hot_latest_until_ms_ = 0;
++  bool AnyPageHot(uint32_t now_ms) const {
++    return int32_t(page_hot_latest_until_ms_ - now_ms) > 0;
++  }
++  bool IsPageHot(uint32_t page, uint32_t now_ms) const {
++    return int32_t(page_hot_until_ms_[page] - now_ms) > 0;
++  }
++  // Bit n set if page (block * 64 + n) is hot.
++  uint64_t HotPageMask(uint32_t block, uint32_t now_ms) const;
++
+   static std::pair<uint32_t, uint32_t> MemoryInvalidationCallbackThunk(
+       void* context_ptr, uint32_t physical_address_start, uint32_t length, bool exact_range);
+ 
 diff --git a/include/rex/memory/utils.h b/include/rex/memory/utils.h
 index 8ccb52c..312180c 100644
 --- a/include/rex/memory/utils.h
@@ -449,7 +477,7 @@ index 378aa4b..c28a596 100644
  namespace rex::thread {
  
 diff --git a/src/core/clock_posix.cpp b/src/core/clock_posix.cpp
-index 00f2382..da2d9ea 100644
+index 00f2382..a0a9c1d 100644
 --- a/src/core/clock_posix.cpp
 +++ b/src/core/clock_posix.cpp
 @@ -10,7 +10,7 @@
@@ -461,7 +489,7 @@ index 00f2382..da2d9ea 100644
  
  #include <sys/time.h>
  
-@@ -18,6 +18,12 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -18,6 +18,73 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #include <mach/mach_time.h>
  #endif
  
@@ -471,10 +499,71 @@ index 00f2382..da2d9ea 100644
 +#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
 +#endif
 +
++#if REX_PLATFORM_PS5
++#include <x86intrin.h>
++
++namespace {
++
++// Reading the clock on the console is a system call, and the runtime reads it
++// constantly: a profile of the game showed the GPU command thread spending 30%
++// of its time in clock_gettime once one more caller was added. The processor's
++// cycle counter costs a few nanoseconds to read and runs at a constant rate
++// (Zen 2), so the tick count is taken from it, calibrated once against
++// CLOCK_MONOTONIC. If the calibration does not give a believable rate, the
++// system call is used as before.
++struct TscClock {
++  uint64_t tsc_start = 0;
++  uint64_t ns_start = 0;
++  uint64_t ns_per_tick_q32 = 0;  // nanoseconds per cycle, 32.32 fixed point
++  bool usable = false;
++
++  static uint64_t SystemNanoseconds() {
++    timespec tp;
++    clock_gettime(CLOCK_MONOTONIC, &tp);
++    return uint64_t(tp.tv_nsec) + uint64_t(tp.tv_sec) * 1000000000ull;
++  }
++
++  TscClock() {
++    const uint64_t ns_a = SystemNanoseconds();
++    const uint64_t tsc_a = __rdtsc();
++    uint64_t ns_b = ns_a;
++    // 20 ms: with the clock's 81 ns resolution that is a few parts per million.
++    while (ns_b - ns_a < 20000000ull) {
++      ns_b = SystemNanoseconds();
++    }
++    const uint64_t tsc_b = __rdtsc();
++    if (tsc_b <= tsc_a) {
++      return;
++    }
++    const double ns_per_tick = double(ns_b - ns_a) / double(tsc_b - tsc_a);
++    // Between 0.1 and 10 ns a cycle: 100 MHz to 10 GHz.
++    if (!(ns_per_tick > 0.1 && ns_per_tick < 10.0)) {
++      return;
++    }
++    ns_per_tick_q32 = uint64_t(ns_per_tick * 4294967296.0);
++    tsc_start = tsc_b;
++    ns_start = ns_b;
++    usable = true;
++  }
++
++  uint64_t Nanoseconds() const {
++    const uint64_t elapsed = __rdtsc() - tsc_start;
++    return ns_start + uint64_t((static_cast<unsigned __int128>(elapsed) * ns_per_tick_q32) >> 32);
++  }
++};
++
++const TscClock& GetTscClock() {
++  static const TscClock clock;
++  return clock;
++}
++
++}  // namespace
++#endif  // REX_PLATFORM_PS5
++
  namespace rex::chrono {
  
  uint64_t Clock::host_tick_frequency_platform() {
-@@ -25,6 +31,13 @@ uint64_t Clock::host_tick_frequency_platform() {
+@@ -25,6 +92,13 @@ uint64_t Clock::host_tick_frequency_platform() {
    mach_timebase_info_data_t info;
    mach_timebase_info(&info);
    return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
@@ -488,6 +577,19 @@ index 00f2382..da2d9ea 100644
  #else
    timespec res;
    int error = clock_getres(CLOCK_MONOTONIC_RAW, &res);
+@@ -44,6 +118,12 @@ uint64_t Clock::host_tick_count_platform() {
+   // inconsistent with the 24 MHz mach frequency and cause ~41x time acceleration.
+   return mach_absolute_time();
+ #else
++#if REX_PLATFORM_PS5
++  const TscClock& tsc_clock = GetTscClock();
++  if (tsc_clock.usable) {
++    return tsc_clock.Nanoseconds();
++  }
++#endif
+   timespec tp;
+   int error = clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
+   assert_zero(error);
 diff --git a/src/core/dynlib_posix.cpp b/src/core/dynlib_posix.cpp
 index fcfd6c9..7ac7790 100644
 --- a/src/core/dynlib_posix.cpp
@@ -1445,6 +1547,241 @@ index 8f2fcb0..a9ea8e2 100644
            }
            rex::thread::Sleep(std::chrono::milliseconds(1));
          }
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..ff824c2 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -13,6 +13,8 @@
+ #include <cstring>
+ #include <utility>
+ 
++#include <rex/chrono/clock.h>
++#include <rex/cvar.h>
+ #include <rex/assert.h>
+ #include <rex/bit.h>
+ #include <rex/dbg.h>
+@@ -20,6 +22,20 @@
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ 
++REXCVAR_DEFINE_UINT32(shared_memory_request_granularity_log2, 0, "GPU",
++                      "log2 of the chunk to which requests for guest memory are widened before "
++                      "uploading and watching it; 0 (or anything not above the page size) "
++                      "requests exactly what a draw needs. Larger chunks mean fewer protection "
++                      "changes and more data uploaded per change");
++
++REXCVAR_DEFINE_UINT32(shared_memory_hot_page_faults, 0, "GPU",
++                      "Guest write faults on one page, within about a second, after which the "
++                      "page is treated as hot: not watched, and uploaded whenever it is "
++                      "requested. 0 never does. For hosts where a fault and the protection "
++                      "changes around it are expensive");
++REXCVAR_DEFINE_UINT32(shared_memory_hot_page_ms, 2000, "GPU",
++                      "How long a hot page stays hot before it is watched again");
++
+ namespace rex::graphics {
+ 
+ SharedMemory::SharedMemory(memory::Memory& memory) : memory_(memory) {
+@@ -34,6 +50,8 @@ void SharedMemory::InitializeCommon() {
+   num_system_page_flags_ = ((kBufferSize >> page_size_log2_) + 63) / 64;
+   system_page_flags_valid_.assign(num_system_page_flags_, 0);
+   system_page_flags_valid_and_gpu_written_.assign(num_system_page_flags_, 0);
++  page_heat_.assign(size_t(num_system_page_flags_) * 64, 0);
++  page_hot_until_ms_.assign(size_t(num_system_page_flags_) * 64, 0);
+ 
+   memory_invalidation_callback_handle_ =
+       memory_.RegisterPhysicalMemoryInvalidationCallback(MemoryInvalidationCallbackThunk, this);
+@@ -291,8 +309,14 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+   uint32_t valid_block_first = valid_page_first >> 6;
+   uint32_t valid_block_last = valid_page_last >> 6;
+ 
++  // Data uploaded from guest memory to a hot page is good for this request
++  // only: the page is not marked valid and not watched (data the GPU wrote is
++  // different, it exists nowhere else, so it is tracked as usual).
++  const uint32_t now_ms = uint32_t(rex::chrono::Clock::QueryHostUptimeMillis());
++  bool skipped_hot_pages = false;
+   {
+     auto global_lock = global_critical_region_.Acquire();
++    const bool check_hot = !written_by_gpu && AnyPageHot(now_ms);
+ 
+     for (uint32_t i = valid_block_first; i <= valid_block_last; ++i) {
+       uint64_t valid_bits = UINT64_MAX;
+@@ -302,6 +326,13 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+       if (i == valid_block_last && (valid_page_last & 63) != 63) {
+         valid_bits &= (uint64_t(1) << ((valid_page_last & 63) + 1)) - 1;
+       }
++      if (check_hot) {
++        const uint64_t hot_bits = HotPageMask(i, now_ms) & valid_bits;
++        if (hot_bits) {
++          skipped_hot_pages = true;
++          valid_bits &= ~hot_bits;
++        }
++      }
+       system_page_flags_valid_[i] |= valid_bits;
+       uint64_t& gpu_written = system_page_flags_valid_and_gpu_written_[i];
+       gpu_written = written_by_gpu ? (gpu_written | valid_bits) : (gpu_written & ~valid_bits);
+@@ -309,10 +340,37 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+   }
+ 
+   if (memory_invalidation_callback_handle_) {
+-    memory().EnablePhysicalMemoryAccessCallbacks(
+-        valid_page_first << page_size_log2_,
+-        (valid_page_last - valid_page_first + 1) << page_size_log2_, true, false);
++    if (!skipped_hot_pages) {
++      memory().EnablePhysicalMemoryAccessCallbacks(
++          valid_page_first << page_size_log2_,
++          (valid_page_last - valid_page_first + 1) << page_size_log2_, true, false);
++    } else {
++      // Watch the runs of pages between the hot ones.
++      uint32_t run_first = UINT32_MAX;
++      for (uint32_t page = valid_page_first; page <= valid_page_last + 1; ++page) {
++        const bool watch = page <= valid_page_last && !IsPageHot(page, now_ms);
++        if (watch) {
++          if (run_first == UINT32_MAX) run_first = page;
++        } else if (run_first != UINT32_MAX) {
++          memory().EnablePhysicalMemoryAccessCallbacks(run_first << page_size_log2_,
++                                                       (page - run_first) << page_size_log2_, true,
++                                                       false);
++          run_first = UINT32_MAX;
++        }
++      }
++    }
++  }
++}
++
++uint64_t SharedMemory::HotPageMask(uint32_t block, uint32_t now_ms) const {
++  uint64_t mask = 0;
++  const uint32_t* until = &page_hot_until_ms_[size_t(block) * 64];
++  for (uint32_t n = 0; n < 64; ++n) {
++    if (int32_t(until[n] - now_ms) > 0) {
++      mask |= uint64_t(1) << n;
++    }
+   }
++  return mask;
+ }
+ 
+ void SharedMemory::UnlinkWatchRange(WatchRange* range) {
+@@ -345,6 +403,23 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   // Some texture or buffer is empty, for example - safe to draw in this case.
+   std::vector<std::pair<uint32_t, uint32_t>> merged_ranges;
+   merged_ranges.reserve(count);
++  // A write to watched memory invalidates a wide area at once (the block of 64
++  // pages around it, see MemoryInvalidationCallback), but each request then
++  // uploads and re-watches only the pages it needs, so one fault is followed
++  // by a protection change for every draw that comes back for its piece.
++  // Where a protection change is expensive (26 us on PS5 whatever its size),
++  // widening the request to whole chunks makes the re-watch as coarse as the
++  // invalidation: the invalid pages of the chunk are uploaded and watched in
++  // one go, and pages already valid are left alone as before.
++  // The ranges as asked for, before widening: hot pages are uploaded only
++  // where a draw really uses them.
++  std::vector<std::pair<uint32_t, uint32_t>> requested_ranges;
++  requested_ranges.reserve(count);
++  const uint32_t request_granularity_log2 =
++      std::min(uint32_t(REXCVAR_GET(shared_memory_request_granularity_log2)), uint32_t(24));
++  const uint32_t request_chunk_mask =
++      request_granularity_log2 > page_size_log2_ ? (uint32_t(1) << request_granularity_log2) - 1
++                                                 : 0;
+   for (size_t i = 0; i < count; ++i) {
+     uint32_t start = ranges[i].first;
+     uint32_t length = ranges[i].second;
+@@ -354,6 +429,14 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+     if (start > kBufferSize || (kBufferSize - start) < length) {
+       return false;
+     }
++    requested_ranges.emplace_back(start, length);
++    if (request_chunk_mask) {
++      const uint64_t end = std::min(
++          (uint64_t(start) + length + request_chunk_mask) & ~uint64_t(request_chunk_mask),
++          uint64_t(kBufferSize));
++      start &= ~request_chunk_mask;
++      length = uint32_t(end - start);
++    }
+     merged_ranges.emplace_back(start, length);
+   }
+   if (merged_ranges.empty()) {
+@@ -405,6 +488,8 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   };
+   {
+     auto global_lock = global_critical_region_.Acquire();
++    const uint32_t now_ms = uint32_t(rex::chrono::Clock::QueryHostUptimeMillis());
++    const bool any_hot = AnyPageHot(now_ms);
+     for (const std::pair<uint32_t, uint32_t>& range : merged_ranges) {
+       uint32_t page_first = range.first >> page_size_log2_;
+       uint32_t page_last = (range.first + range.second - 1) >> page_size_log2_;
+@@ -413,6 +498,10 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+       uint32_t range_start = UINT32_MAX;
+       for (uint32_t i = block_first; i <= block_last; ++i) {
+         uint64_t block_valid = system_page_flags_valid_[i];
++        // Hot pages are handled below, from the ranges as asked for.
++        if (any_hot) {
++          block_valid |= HotPageMask(i, now_ms);
++        }
+         // Consider pages in the block outside the requested range valid.
+         if (i == block_first) {
+           uint64_t block_before = (uint64_t(1) << (page_first & 63)) - 1;
+@@ -453,6 +542,30 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+         append_upload_range(range_start, page_last + 1 - range_start);
+       }
+     }
++    // Hot pages: always uploaded where a draw uses them (never where the
++    // request was only widened over them), unless the GPU wrote them, in which
++    // case guest memory does not have the data. Anything watching such a page
++    // (a texture loaded from it) is told it may have changed, since no fault
++    // will say so.
++    if (any_hot) {
++      for (const std::pair<uint32_t, uint32_t>& range : requested_ranges) {
++        const uint32_t page_first = range.first >> page_size_log2_;
++        const uint32_t page_last = (range.first + range.second - 1) >> page_size_log2_;
++        uint32_t run_first = UINT32_MAX;
++        for (uint32_t page = page_first; page <= page_last + 1; ++page) {
++          const bool upload =
++              page <= page_last && IsPageHot(page, now_ms) &&
++              !(system_page_flags_valid_and_gpu_written_[page >> 6] & (uint64_t(1) << (page & 63)));
++          if (upload) {
++            if (run_first == UINT32_MAX) run_first = page;
++          } else if (run_first != UINT32_MAX) {
++            append_upload_range(run_first, page - run_first);
++            FireWatches(run_first, page - 1, false);
++            run_first = UINT32_MAX;
++          }
++        }
++      }
++    }
+   }
+ 
+   COUNT_profile_set("gpu/shared_memory/request_ranges_count", uint32_t(count));
+@@ -494,6 +607,31 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+ 
+   auto global_lock = global_critical_region_.Acquire();
+ 
++  // A guest write fault (not an exact-range invalidation, which is the GPU
++  // side or an explicit request): count it against the pages written, and
++  // make a page that keeps faulting hot.
++  const uint32_t hot_threshold = REXCVAR_GET(shared_memory_hot_page_faults);
++  if (!exact_range && hot_threshold) {
++    const uint32_t now_ms = uint32_t(rex::chrono::Clock::QueryHostUptimeMillis());
++    if (uint32_t(now_ms - page_heat_decay_ms_) >= 1000) {
++      page_heat_decay_ms_ = now_ms;
++      for (uint8_t& heat : page_heat_) {
++        heat >>= 1;
++      }
++    }
++    const uint32_t hot_until = now_ms + std::max(REXCVAR_GET(shared_memory_hot_page_ms), uint32_t(1));
++    for (uint32_t page = page_first; page <= page_last; ++page) {
++      if (page_heat_[page] < 255) {
++        ++page_heat_[page];
++      }
++      if (page_heat_[page] >= hot_threshold) {
++        page_heat_[page] = 0;
++        page_hot_until_ms_[page] = hot_until;
++        page_hot_latest_until_ms_ = hot_until;
++      }
++    }
++  }
++
+   if (!exact_range) {
+     // Check if a somewhat wider range (up to 256 KB with 4 KB pages) can be
+     // invalidated - if no GPU-written data nearby that was not intended to be
 diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
 index 58e36a4..8951295 100644
 --- a/src/kernel/xam/xam_net.cpp
