@@ -988,7 +988,7 @@ index b4b885a..19ace70 100644
  #include <sys/ioctl.h>
  #include <unistd.h>
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
-index 9ac8d15..80a7e43 100644
+index 9ac8d15..a656a20 100644
 --- a/src/core/threading_posix.cpp
 +++ b/src/core/threading_posix.cpp
 @@ -9,7 +9,7 @@
@@ -1037,7 +1037,131 @@ index 9ac8d15..80a7e43 100644
  #else
    return static_cast<uint32_t>(syscall(SYS_gettid));
  #endif
-@@ -718,6 +723,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -621,6 +626,96 @@ struct ThreadStartData {
+   Thread* thread_obj;
+ };
+ 
++#if REX_PLATFORM_PS5
++}  // namespace rex::thread
++
++#include <chrono>
++#include <mutex>
++#include <vector>
++
++// Weak: a build whose kernel library does not export them (a payload) links
++// and keeps the default stacks.
++extern "C" {
++int32_t sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end, size_t length,
++                                      size_t alignment, int memory_type, int64_t* physical_start)
++    __attribute__((weak));
++int32_t sceKernelMapDirectMemory(void** address, size_t length, int protection, int flags,
++                                 int64_t direct_start, size_t alignment) __attribute__((weak));
++int64_t sceKernelGetDirectMemorySize(void) __attribute__((weak));
++int32_t sceKernelReserveVirtualRange(void** address, size_t length, int flags, size_t alignment)
++    __attribute__((weak));
++}
++
++namespace rex::thread {
++
++// Thread stacks from direct memory.
++//
++// In an installed title a stack that pthread allocates comes out of the
++// title's flexible memory, 448 MiB in all on firmware 13.42. Guest threads ask
++// for 16 MiB each, so a game's couple of dozen threads exhaust it and
++// pthread_create fails (seen as "CreateThread failed" C0000017). Direct memory
++// is 12 GiB. A stack is one direct allocation mapped above a reserved,
++// inaccessible guard range.
++//
++// Stacks are reused rather than released: there is no point at which the
++// thread that ran on one is known to have left it for good, so a stack goes
++// back to the pool when its thread object is destroyed after finishing, and is
++// handed out again only once it has been retired for a while.
++struct DirectStack {
++  void* base = nullptr;
++  size_t size = 0;
++  std::chrono::steady_clock::time_point retired;
++};
++
++inline std::mutex g_direct_stack_mutex;
++inline std::vector<DirectStack> g_direct_stack_pool;
++
++inline bool AcquireDirectStack(size_t size, DirectStack& out) {
++  if (!&sceKernelAllocateDirectMemory || !&sceKernelMapDirectMemory ||
++      !&sceKernelGetDirectMemorySize || !&sceKernelReserveVirtualRange) {
++    return false;
++  }
++  constexpr size_t kUnit = 0x10000;
++  size = (size + kUnit - 1) & ~(kUnit - 1);
++  {
++    std::lock_guard<std::mutex> lock(g_direct_stack_mutex);
++    const auto now = std::chrono::steady_clock::now();
++    for (auto it = g_direct_stack_pool.begin(); it != g_direct_stack_pool.end(); ++it) {
++      if (it->size == size && now - it->retired > std::chrono::seconds(2)) {
++        out = *it;
++        g_direct_stack_pool.erase(it);
++        return true;
++      }
++    }
++  }
++  void* reserved = nullptr;
++  if (sceKernelReserveVirtualRange(&reserved, size + kUnit, 0, kUnit) != 0 || !reserved) {
++    return false;
++  }
++  int64_t start = -1;
++  if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), size, kUnit, 12, &start) !=
++      0) {
++    return false;
++  }
++  void* base = static_cast<uint8_t*>(reserved) + kUnit;
++  void* mapped = base;
++  if (sceKernelMapDirectMemory(&mapped, size, 3 /* read, write */, 0x10 /* fixed */, start,
++                               kUnit) != 0 ||
++      mapped != base) {
++    return false;
++  }
++  out.base = base;
++  out.size = size;
++  return true;
++}
++
++inline void RetireDirectStack(DirectStack stack) {
++  stack.retired = std::chrono::steady_clock::now();
++  std::lock_guard<std::mutex> lock(g_direct_stack_mutex);
++  g_direct_stack_pool.push_back(stack);
++}
++#endif  // REX_PLATFORM_PS5
++
+ template <>
+ class PosixCondition<Thread> : public PosixConditionBase {
+   enum class State {
+@@ -651,6 +746,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
+     pthread_attr_t attr;
+     if (pthread_attr_init(&attr) != 0)
+       return false;
++#if REX_PLATFORM_PS5
++    if (AcquireDirectStack(params.stack_size, direct_stack_)) {
++      if (pthread_attr_setstack(&attr, direct_stack_.base, direct_stack_.size) != 0) {
++        pthread_attr_destroy(&attr);
++        return false;
++      }
++    } else
++#endif
+     if (pthread_attr_setstacksize(&attr, params.stack_size) != 0) {
+       pthread_attr_destroy(&attr);
+       return false;
+@@ -697,6 +800,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
+     // Match Canary/Edge behavior.
+     // Force-cancel/join from the condition destructor can self-join/crash
+     // depending on shutdown ordering, so threads must be stopped explicitly.
++#if REX_PLATFORM_PS5
++    if (direct_stack_.base && state_ == State::kFinished) {
++      RetireDirectStack(direct_stack_);
++    }
++#endif
+   }
+ 
+   bool Signal() override { return true; }
+@@ -718,6 +826,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
          std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
          rex::string::copy_truncating(result.data(), android_pre_api_26_name_, result.size());
        }
@@ -1046,7 +1170,7 @@ index 9ac8d15..80a7e43 100644
  #else
        if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
          assert_always();
-@@ -736,6 +743,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -736,6 +846,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
        if (pthread_equal(thread_, pthread_self())) {
          pthread_setname_np(std::string(name).c_str());
        }
@@ -1055,7 +1179,7 @@ index 9ac8d15..80a7e43 100644
  #else
        pthread_setname_np(thread_, std::string(name).c_str());
  #endif
-@@ -758,13 +767,18 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -758,13 +870,18 @@ class PosixCondition<Thread> : public PosixConditionBase {
  
  #if defined(__APPLE__)
    uint32_t system_id() const { return static_cast<uint32_t>(pthread_mach_thread_np(thread_)); }
@@ -1075,7 +1199,7 @@ index 9ac8d15..80a7e43 100644
      // macOS doesn't expose Linux-style pthread affinity masks; report every
      // logical processor as available.
      auto cpu_count = std::min<uint32_t>(logical_processor_count(), 64);
-@@ -795,7 +809,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -795,7 +912,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
  
    void set_affinity_mask(uint64_t mask) {
      WaitStarted();
@@ -1084,7 +1208,7 @@ index 9ac8d15..80a7e43 100644
      // macOS doesn't expose Linux-style pthread affinity masks; keep this a
      // no-op so higher layers can build and run.
      (void)mask;
-@@ -868,7 +882,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+@@ -868,7 +985,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
        return;
      }
  
@@ -1093,7 +1217,17 @@ index 9ac8d15..80a7e43 100644
      // macOS has no sigqueue/pthread_sigqueue; pthread_kill delivers the signal
      // without the sigval payload.
      int result = pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
-@@ -1511,6 +1525,8 @@ void Thread::Exit(int exit_code) {
+@@ -1027,6 +1144,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ #endif
+   }
+   pthread_t thread_;
++#if REX_PLATFORM_PS5
++  DirectStack direct_stack_;
++#endif
+   bool signaled_;
+   int exit_code_;
+   State state_;             // Protected by state_mutex_
+@@ -1511,6 +1631,8 @@ void Thread::Exit(int exit_code) {
  void set_current_thread_name(const std::string_view name) {
  #if defined(__APPLE__)
    pthread_setname_np(std::string(name).c_str());
