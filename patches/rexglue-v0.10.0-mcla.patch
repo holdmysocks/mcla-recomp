@@ -519,7 +519,7 @@ index 378aa4b..c28a596 100644
  namespace rex::thread {
  
 diff --git a/src/core/clock_posix.cpp b/src/core/clock_posix.cpp
-index 00f2382..a0a9c1d 100644
+index 00f2382..ef537b2 100644
 --- a/src/core/clock_posix.cpp
 +++ b/src/core/clock_posix.cpp
 @@ -10,7 +10,7 @@
@@ -531,7 +531,7 @@ index 00f2382..a0a9c1d 100644
  
  #include <sys/time.h>
  
-@@ -18,6 +18,73 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+@@ -18,6 +18,12 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
  #include <mach/mach_time.h>
  #endif
  
@@ -541,71 +541,10 @@ index 00f2382..a0a9c1d 100644
 +#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
 +#endif
 +
-+#if REX_PLATFORM_PS5
-+#include <x86intrin.h>
-+
-+namespace {
-+
-+// Reading the clock on the console is a system call, and the runtime reads it
-+// constantly: a profile of the game showed the GPU command thread spending 30%
-+// of its time in clock_gettime once one more caller was added. The processor's
-+// cycle counter costs a few nanoseconds to read and runs at a constant rate
-+// (Zen 2), so the tick count is taken from it, calibrated once against
-+// CLOCK_MONOTONIC. If the calibration does not give a believable rate, the
-+// system call is used as before.
-+struct TscClock {
-+  uint64_t tsc_start = 0;
-+  uint64_t ns_start = 0;
-+  uint64_t ns_per_tick_q32 = 0;  // nanoseconds per cycle, 32.32 fixed point
-+  bool usable = false;
-+
-+  static uint64_t SystemNanoseconds() {
-+    timespec tp;
-+    clock_gettime(CLOCK_MONOTONIC, &tp);
-+    return uint64_t(tp.tv_nsec) + uint64_t(tp.tv_sec) * 1000000000ull;
-+  }
-+
-+  TscClock() {
-+    const uint64_t ns_a = SystemNanoseconds();
-+    const uint64_t tsc_a = __rdtsc();
-+    uint64_t ns_b = ns_a;
-+    // 20 ms: with the clock's 81 ns resolution that is a few parts per million.
-+    while (ns_b - ns_a < 20000000ull) {
-+      ns_b = SystemNanoseconds();
-+    }
-+    const uint64_t tsc_b = __rdtsc();
-+    if (tsc_b <= tsc_a) {
-+      return;
-+    }
-+    const double ns_per_tick = double(ns_b - ns_a) / double(tsc_b - tsc_a);
-+    // Between 0.1 and 10 ns a cycle: 100 MHz to 10 GHz.
-+    if (!(ns_per_tick > 0.1 && ns_per_tick < 10.0)) {
-+      return;
-+    }
-+    ns_per_tick_q32 = uint64_t(ns_per_tick * 4294967296.0);
-+    tsc_start = tsc_b;
-+    ns_start = ns_b;
-+    usable = true;
-+  }
-+
-+  uint64_t Nanoseconds() const {
-+    const uint64_t elapsed = __rdtsc() - tsc_start;
-+    return ns_start + uint64_t((static_cast<unsigned __int128>(elapsed) * ns_per_tick_q32) >> 32);
-+  }
-+};
-+
-+const TscClock& GetTscClock() {
-+  static const TscClock clock;
-+  return clock;
-+}
-+
-+}  // namespace
-+#endif  // REX_PLATFORM_PS5
-+
  namespace rex::chrono {
  
  uint64_t Clock::host_tick_frequency_platform() {
-@@ -25,6 +92,13 @@ uint64_t Clock::host_tick_frequency_platform() {
+@@ -25,6 +31,13 @@ uint64_t Clock::host_tick_frequency_platform() {
    mach_timebase_info_data_t info;
    mach_timebase_info(&info);
    return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
@@ -619,16 +558,15 @@ index 00f2382..a0a9c1d 100644
  #else
    timespec res;
    int error = clock_getres(CLOCK_MONOTONIC_RAW, &res);
-@@ -44,6 +118,12 @@ uint64_t Clock::host_tick_count_platform() {
+@@ -44,6 +57,11 @@ uint64_t Clock::host_tick_count_platform() {
    // inconsistent with the 24 MHz mach frequency and cause ~41x time acceleration.
    return mach_absolute_time();
  #else
-+#if REX_PLATFORM_PS5
-+  const TscClock& tsc_clock = GetTscClock();
-+  if (tsc_clock.usable) {
-+    return tsc_clock.Nanoseconds();
-+  }
-+#endif
++  // On PS5 clock_gettime is a system call, and the runtime reads the clock
++  // constantly. An installed title replaces it with one answered from the
++  // cycle counter and re-tied to the system clock every 100 ms (the game
++  // repository's ps5/title_support.c), which also survives the console's rest
++  // mode; a counter calibrated once here would not.
    timespec tp;
    int error = clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
    assert_zero(error);

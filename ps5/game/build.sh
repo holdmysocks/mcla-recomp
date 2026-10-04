@@ -9,6 +9,7 @@
 #
 # Usage: build.sh [stage ...]     (default: 4)  -> $work/mcla-stage<N>.elf
 # Environment: MCLA_RUN_SECONDS, MCLA_LOG_LEVEL, JOBS
+#   MCLA_PLAY=1  a build for playing (see below)
 #   MCLA_PROFILE_AT=<second>  take a 20 s sampling profile from that second
 #   MCLA_TITLE_NAME=<name>  the name shown on the console (default "MCLA Stage <N>")
 #   ART_DIR=<folder>  tile and backgrounds for the title (see ps5/title_build.sh)
@@ -130,6 +131,10 @@ for stage in "${stages[@]}"; do
     [ -z "${MCLA_PROFILE_DIPS:-}" ] || extra="$extra -DMCLA_PROFILE_DIPS=$MCLA_PROFILE_DIPS"
     [ -z "${MCLA_PROFILE_DIPS_FROM:-}" ] || extra="$extra -DMCLA_PROFILE_DIPS_FROM=$MCLA_PROFILE_DIPS_FROM"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
+    # MCLA_PLAY=1: a build for playing, not measuring. No wait for a log
+    # connection (the log is /data/mcla/mcla-play.log on the console), no
+    # periodic diagnostics, no time limit. Use it with MCLA_LOG_LEVEL=warning.
+    [ -z "${MCLA_PLAY:-}" ] || extra="$extra -DMCLA_PLAY"
     if [ -n "${TITLE:-}" ]; then
         # As an installable title, linked with the Vulkan driver, log over TCP.
         ( cd "$runtime_build" && eval "\"$cxx\" $flags $extra -DMCLA_TITLE -I\"$work/src/ps5\" -o \"$work/obj/title_stage$stage.o\" -c \"$work/src/ps5/main_ps5.cpp\"" )

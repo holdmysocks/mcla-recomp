@@ -183,20 +183,46 @@ static uint64_t mcla_clock_monotonic_ns(void) {
   } while ((version & 1u) || atomic_load(&mcla_clock_version) != version);
   const uint64_t elapsed = mcla_cycles() - cycles0;
   uint64_t ns = ns0 + (uint64_t)(((unsigned __int128)elapsed * ns_per_cycle) >> 32);
-  if (elapsed > mcla_clock_resync_cycles && !atomic_flag_test_and_set(&mcla_clock_updating)) {
-    const uint64_t real = mcla_system_monotonic_ns();
-    const uint64_t cycles = mcla_cycles();
-    if (real) {
-      atomic_fetch_add(&mcla_clock_version, 1);
-      mcla_clock_cycles0 = cycles;
-      mcla_clock_ns0 = real;
-      /* The rate over the whole run so far: ever more exact. */
-      mcla_clock_ns_per_cycle = (uint64_t)((((unsigned __int128)(real - mcla_clock_first_ns)) << 32) /
-                                           (cycles - mcla_clock_first_cycles));
-      atomic_fetch_add(&mcla_clock_version, 1);
-      ns = real;
+  if (elapsed > mcla_clock_resync_cycles) {
+    if (!atomic_flag_test_and_set(&mcla_clock_updating)) {
+      const uint64_t real = mcla_system_monotonic_ns();
+      const uint64_t cycles = mcla_cycles();
+      if (real) {
+        /* The rate over the whole run so far: ever more exact. Unless the
+         * counter or the clock jumped (the console was in rest mode, say):
+         * a rate more than 1% from the one in use means the long baseline
+         * is no longer one stretch, and it starts again from here. */
+        uint64_t rate = ns_per_cycle;
+        if (cycles > mcla_clock_first_cycles && real > mcla_clock_first_ns) {
+          const uint64_t whole_run = (uint64_t)((((unsigned __int128)(real - mcla_clock_first_ns)) << 32) /
+                                                (cycles - mcla_clock_first_cycles));
+          const uint64_t difference = whole_run > rate ? whole_run - rate : rate - whole_run;
+          if (difference < rate / 100) {
+            rate = whole_run;
+          } else {
+            mcla_clock_first_cycles = cycles;
+            mcla_clock_first_ns = real;
+          }
+        } else {
+          mcla_clock_first_cycles = cycles;
+          mcla_clock_first_ns = real;
+        }
+        atomic_fetch_add(&mcla_clock_version, 1);
+        mcla_clock_cycles0 = cycles;
+        mcla_clock_ns0 = real;
+        mcla_clock_ns_per_cycle = rate;
+        atomic_fetch_add(&mcla_clock_version, 1);
+        ns = real;
+      }
+      atomic_flag_clear(&mcla_clock_updating);
+    } else if (elapsed > mcla_clock_resync_cycles * 10) {
+      /* Far past the anchor while another thread is re-tying it: do not
+       * extrapolate across what may be a jump. */
+      const uint64_t real = mcla_system_monotonic_ns();
+      if (real) {
+        ns = real;
+      }
     }
-    atomic_flag_clear(&mcla_clock_updating);
   }
   /* Never backwards, whichever thread asks and whatever a resync did. */
   uint64_t last = atomic_load(&mcla_clock_last_ns);

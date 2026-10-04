@@ -350,7 +350,9 @@ int Finish(const char* what, int code) {
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);
   Line("mcla-ps5 starts, pid %d, stage %d", getpid(), MCLA_STAGE);
+#ifndef MCLA_PLAY
   alarm(MCLA_RUN_SECONDS + 120);
+#endif
 
   const std::filesystem::path root = MCLA_PS5_ROOT;
   const std::filesystem::path game_root = root / "game";
@@ -690,6 +692,12 @@ int main() {
     int next_profile_second = 15;
     for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
+#ifdef MCLA_PLAY
+      // A build for playing: none of the periodic diagnostics below (thread
+      // dumps, counters, profiles), and no end to the run.
+      --second;
+      continue;
+#endif
       if (second <= 30 || second % 30 == 0) Line("alive: %d s", second);
       // Every five seconds: how many protection changes and faults the
       // runtime made, the two costs the profile points at.

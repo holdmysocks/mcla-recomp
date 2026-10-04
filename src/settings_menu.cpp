@@ -363,7 +363,13 @@ struct ItemDef {
 // A value's text is also the name of the Flash element created for it, and
 // characters such as '/' are path separators there (LARecomp found that the
 // hard way: it crashes UI setup).
+#if REX_PLATFORM_PS5
+// The console's display is 60 Hz.
+constexpr double kFpsTargets[] = {30.0, 60.0};
+#else
 constexpr double kFpsTargets[] = {30.0, 60.0, 120.0, 0.0};
+#endif
+constexpr int kFpsTargetCount = int(sizeof(kFpsTargets) / sizeof(kFpsTargets[0]));
 constexpr const char* kPromptValues[] = {"auto", "xbox", "playstation"};
 constexpr const char* kPromptLabels[] = {"AUTO", "XBOX", "PLAYSTATION"};
 constexpr const char* kIntroValues[] = {"normal", "fast", "skip"};
@@ -371,9 +377,13 @@ constexpr const char* kIntroLabels[] = {"NORMAL", "FAST", "SKIP (NO LOGO)"};
 
 const ItemDef kDisplayItems[] = {
     {"PM_MxFps", ItemKind::kNumberChoice, "mcla_fps", "FPS TARGET", nullptr, nullptr, kFpsTargets,
-     4, "%.0f", "UNCAPPED"},
+     kFpsTargetCount, "%.0f", "UNCAPPED"},
+#if !REX_PLATFORM_PS5
+    // Neither means anything on the console: there is one display mode, and
+    // the PS5 host turns the emulated vsync off at every start.
     {"PM_MxVsync", ItemKind::kToggle, "vsync", "VSYNC"},
     {"PM_MxFullscreen", ItemKind::kToggle, "fullscreen", "FULLSCREEN"},
+#endif
     {"PM_MxMotionBlur", ItemKind::kToggle, "mcla_motion_blur", "MOTION BLUR"},
     {"PM_MxDof", ItemKind::kToggle, "mcla_depth_of_field", "DEPTH OF FIELD"},
 };

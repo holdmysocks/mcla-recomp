@@ -263,6 +263,12 @@ One submission a frame (`vulkan_submit_on_primary_buffer_end` off, set by the PS
 
 A 60 target after these changes (230 s of play): mean 42.7 presents/s, 31-60 typical, 24 seconds at 55 or more and 87 below 40; 28-44 before. About 181,000 draws/s on average, well under the map view's ceiling, so whether the GPU command thread or the game's own thread limits driving at 60 is open (no all-thread profile at 60 yet). The user keeps the target at 30.
 
+### A build for playing (2026-10-04)
+
+`MCLA_PLAY=1 MCLA_LOG_LEVEL=warning` with `TITLE=` builds the title without the test scaffolding: no wait for a log connection, no time limit, no periodic counters, dumps or profiles. Its log (warnings, errors, a crash report) is `/data/mcla/mcla-play.log` on the console, replaced at every start. On PS5 the in-game menu has no VSYNC or FULLSCREEN row and FPS TARGET offers 30 and 60.
+
+The runtime's own cycle-counter clock is gone: on PS5 it reads `clock_gettime`, which the title answers from the cycle counter (`ps5/title_support.c`). That one re-ties itself to the system clock every 100 ms and starts its rate baseline again if the counter or the clock jumps. The user reports the play build survives rest mode.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

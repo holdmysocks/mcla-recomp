@@ -45,6 +45,14 @@ inline int g_mcla_log_fd = 1;
 #define MCLA_TITLE_LOG_WAIT_SECONDS 90
 #endif
 
+#ifdef MCLA_PLAY
+// A build for playing waits for nobody: warnings, errors and a crash report go
+// to a file on the console, replaced at every start (fetch it over FTP).
+inline void MclaTitleLogConnect() {
+  const int file = open("/data/mcla/mcla-play.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  g_mcla_log_fd = file >= 0 ? file : open("/dev/null", O_WRONLY);
+}
+#else
 inline void MclaTitleLogConnect() {
   const int listener = socket(AF_INET, SOCK_STREAM, 0);
   if (listener < 0) _exit(90);
@@ -77,6 +85,7 @@ inline void MclaTitleLogConnect() {
                     connection, out, out < 0 ? out_errno : 0, err, err < 0 ? err_errno : 0);
   if (length > 0) (void)!write(connection, report, static_cast<size_t>(length));
 }
+#endif  // MCLA_PLAY
 
 #else
 
