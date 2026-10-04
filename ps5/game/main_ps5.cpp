@@ -18,6 +18,13 @@
 //   2  ... and load the XEX image into guest memory
 //   3  ... and create the guest heap and the suspended main thread
 //   4  ... and resume the main thread, then watch it for MCLA_RUN_SECONDS
+//   5  graphics only (title): create the Xenos GPU system on Vulkan, its
+//      device and its presenter; nothing else
+//   6  presentation (title): stage 5 with a window on SDL's offscreen video
+//      driver, standing for the display. Attaching the presenter to it makes
+//      the VK_KHR_display surface and the swapchain; the message loop then
+//      runs for MCLA_RUN_SECONDS with a repaint requested every second. No
+//      guest code, so the picture is whatever the presenter clears to
 
 #include "generated/default/mcla_init.h"
 
@@ -41,8 +48,17 @@
 #include <rex/kernel/init.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
+#include <rex/system/gpu_plugin.h>
+#include <rex/ui/presenter.h>
+#include <rex/ui/window.h>
+#include <rex/ui/windowed_app_context_sdl.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xthread.h>
+
+// As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC; as
+// a payload g_mcla_log_fd is standard output, the loader socket.
+#include "title_log.h"
+#include "log_fd_sink.h"
 
 #ifndef MCLA_STAGE
 #define MCLA_STAGE 4
@@ -59,6 +75,11 @@ REXCVAR_DECLARE(uint32_t, rexcrt_heap_size_mb);
 std::unique_ptr<rex::system::IAudioSystem> CreateMclaAudioSystem(
     rex::runtime::FunctionDispatcher* function_dispatcher);
 
+// The Xenos GPU plugin's factory. On the other platforms the plugin is a
+// shared library found by name at run time; here it is linked in.
+extern "C" rex::system::IGraphicsSystem* rex_gpu_create(uint32_t abi_version,
+                                                        const rex::system::GpuCreateInfo* info);
+
 // --- Early crash reporter -------------------------------------------------------
 //
 // Installed from a constructor that runs ahead of the runtime's static
@@ -70,7 +91,7 @@ std::unique_ptr<rex::system::IAudioSystem> CreateMclaAudioSystem(
 namespace {
 
 void EarlyWrite(const char* text) {
-  (void)!write(1, text, std::strlen(text));
+  (void)!write(g_mcla_log_fd,text, std::strlen(text));
 }
 
 void EarlyHex(const char* label, uint64_t value) {
@@ -82,7 +103,7 @@ void EarlyHex(const char* label, uint64_t value) {
   buffer[n++] = 'x';
   for (int shift = 60; shift >= 0; shift -= 4) buffer[n++] = digits[(value >> shift) & 0xF];
   buffer[n++] = '\n';
-  (void)!write(1, buffer, n);
+  (void)!write(g_mcla_log_fd,buffer, n);
 }
 
 int EarlyAnchor() { return 0; }
@@ -115,6 +136,7 @@ void EarlyCrash(int signal_number, siginfo_t* info, void* context) {
 }
 
 __attribute__((constructor(101))) void InstallEarlyCrashReporter() {
+  MclaTitleLogConnect();
   EarlyWrite("early constructor: installing the crash reporter\n");
   struct sigaction action;
   std::memset(&action, 0, sizeof action);
@@ -130,10 +152,11 @@ void Line(const char* format, ...) {
   char text[512];
   va_list args;
   va_start(args, format);
-  std::vsnprintf(text, sizeof text, format, args);
+  std::vsnprintf(text, sizeof text - 1, format, args);
   va_end(args);
-  std::printf("%s\n", text);
-  std::fflush(stdout);
+  const size_t length = std::strlen(text);
+  text[length] = '\n';
+  (void)!write(g_mcla_log_fd, text, length + 1);
 }
 
 // Printed before an operation, so the last "NEXT" line names what was running
@@ -174,13 +197,95 @@ int main() {
   char* arguments[] = {program, nullptr};
   rex::cvar::Init(1, arguments);
   rex::InitLoggingEarly();
+  // The runtime's log goes to the same place as this file's own lines: the
+  // loader socket in a payload, the PC's connection in a title (where
+  // standard output cannot be used at all, see ps5/title_log.h).
   rex::LogConfig log_config;
-  log_config.log_to_console = true;
+  log_config.log_to_console = false;
+  log_config.extra_sinks.push_back(std::make_shared<MclaFdSink>(g_mcla_log_fd));
 #ifdef MCLA_LOG_LEVEL
   log_config.default_level = spdlog::level::from_str(MCLA_LOG_LEVEL);
 #endif
   log_config.flush_level = spdlog::level::trace;
   rex::InitLogging(log_config);
+
+#if MCLA_STAGE == 5
+  // Graphics only: the Xenos GPU system on its Vulkan backend, created from
+  // the statically linked plugin, and its provider (instance, device) and
+  // presenter. No window, no runtime, no guest code.
+  {
+    NEXT("create the Xenos graphics system (Vulkan backend)");
+    rex::system::GpuCreateInfo create_info;
+    create_info.struct_size = sizeof create_info;
+    create_info.backend = "vulkan";
+    std::unique_ptr<rex::system::IGraphicsSystem> graphics(
+        rex_gpu_create(rex::system::kGpuPluginAbiVersion, &create_info));
+    if (!graphics) {
+      return Finish("the GPU plugin returned no graphics system", 7);
+    }
+    NEXT("SetupPresentation: Vulkan instance, device and presenter, without a window");
+    const auto graphics_status = graphics->SetupPresentation(nullptr);
+    if (XFAILED(graphics_status)) {
+      Line("SetupPresentation failed: %08X", static_cast<unsigned>(graphics_status));
+      return Finish("graphics setup failed", 8);
+    }
+    Line("PASS Vulkan device and presenter created");
+    return Finish("stage 5 complete", 0);
+  }
+#endif
+
+#if MCLA_STAGE == 6
+  {
+    NEXT("SDL application context on the offscreen video driver");
+    rex::cvar::SetFlagByName("video_driver", "offscreen");
+    rex::ui::SDLWindowedAppContext app_context;
+    if (!app_context.Initialize()) {
+      return Finish("the SDL application context did not initialise", 9);
+    }
+
+    NEXT("create the Xenos graphics system (Vulkan backend)");
+    rex::system::GpuCreateInfo create_info;
+    create_info.struct_size = sizeof create_info;
+    create_info.backend = "vulkan";
+    std::unique_ptr<rex::system::IGraphicsSystem> graphics(
+        rex_gpu_create(rex::system::kGpuPluginAbiVersion, &create_info));
+    if (!graphics) {
+      return Finish("the GPU plugin returned no graphics system", 7);
+    }
+    NEXT("SetupPresentation with the application context");
+    const auto graphics_status = graphics->SetupPresentation(&app_context);
+    if (XFAILED(graphics_status) || !graphics->presenter()) {
+      Line("SetupPresentation failed: %08X", static_cast<unsigned>(graphics_status));
+      return Finish("graphics setup failed", 8);
+    }
+
+    NEXT("create a 1280x720 window");
+    auto window = rex::ui::Window::Create(app_context, "mcla", 1280, 720);
+    if (!window) {
+      return Finish("no window", 10);
+    }
+    NEXT("open the window");
+    if (!window->Open()) {
+      return Finish("the window did not open", 11);
+    }
+    NEXT("attach the presenter to the window (display surface and swapchain)");
+    window->SetPresenter(graphics->presenter());
+
+    NEXT("run the message loop for %d s, requesting a repaint every second", MCLA_RUN_SECONDS);
+    std::thread ticker([&app_context, &window]() {
+      for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        Line("alive: %d s", second);
+        app_context.CallInUIThread([&window]() { window->RequestPaint(); });
+      }
+      app_context.RequestDeferredQuit();
+    });
+    app_context.RunMainMessageLoop();
+    ticker.join();
+    Line("PASS message loop ended normally");
+    return Finish("stage 6 complete", 0);
+  }
+#endif
 
   NEXT("construct rex::Runtime");
   auto runtime = std::make_unique<rex::Runtime>(game_root, user_root, std::filesystem::path(),

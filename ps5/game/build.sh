@@ -9,6 +9,8 @@
 #
 # Usage: build.sh [stage ...]     (default: 4)  -> $work/mcla-stage<N>.elf
 # Environment: MCLA_RUN_SECONDS, MCLA_LOG_LEVEL, JOBS
+#   TITLE=<TITLEID>  build an installable title instead (ps5/title_build.sh):
+#                    <driver>/dist/<TITLEID>, one stage at a time
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$here/../.." && pwd)
@@ -30,6 +32,9 @@ tr -d '\r' < "$here/main_ps5.cpp" > "$work/src/ps5/main_ps5.cpp.new"
 cmp -s "$work/src/ps5/main_ps5.cpp.new" "$work/src/ps5/main_ps5.cpp" 2>/dev/null \
     && rm "$work/src/ps5/main_ps5.cpp.new" \
     || mv "$work/src/ps5/main_ps5.cpp.new" "$work/src/ps5/main_ps5.cpp"
+for header in title_log.h log_fd_sink.h; do
+    tr -d '\r' < "$here/../$header" > "$work/src/ps5/$header"
+done
 
 # The runtime's own defines and include paths, taken from its build; its
 # precompiled header and float model are not wanted for the game code.
@@ -93,7 +98,15 @@ for stage in "${stages[@]}"; do
     extra="-DMCLA_STAGE=$stage"
     [ -z "${MCLA_RUN_SECONDS:-}" ] || extra="$extra -DMCLA_RUN_SECONDS=$MCLA_RUN_SECONDS"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
-    ( cd "$runtime_build" && eval "\"$cxx\" $flags $extra -o \"$work/obj/main_stage$stage.o\" -c \"$work/src/ps5/main_ps5.cpp\"" )
+    if [ -n "${TITLE:-}" ]; then
+        # As an installable title, linked with the Vulkan driver, log over TCP.
+        ( cd "$runtime_build" && eval "\"$cxx\" $flags $extra -DMCLA_TITLE -I\"$work/src/ps5\" -o \"$work/obj/title_stage$stage.o\" -c \"$work/src/ps5/main_ps5.cpp\"" )
+        bash "$here/../title_build.sh" "$TITLE" "MCLA Stage $stage" \
+            "$work/obj/title_stage$stage.o" "$work"/obj/gen_*.o "$work"/obj/host_*.o \
+            --start-group $(ls "$libs"/*.a | tr '\n' ' ') "$sdk/target/lib/libc++experimental.a" --end-group
+        continue
+    fi
+    ( cd "$runtime_build" && eval "\"$cxx\" $flags $extra -I\"$work/src/ps5\" -o \"$work/obj/main_stage$stage.o\" -c \"$work/src/ps5/main_ps5.cpp\"" )
     # The runtime's libraries as one group because they reference each other.
     # nodynamic-undefined-weak: see ps5/probes/arena/build.sh.
     "$cxx" -Wl,-z,nodynamic-undefined-weak -Wl,-T,"$work/payload.ld" \

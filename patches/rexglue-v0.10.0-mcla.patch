@@ -214,6 +214,86 @@ index 536f710..9fcc46d 100644
  #endif
  
  namespace rex {
+diff --git a/include/rex/ui/surface.h b/include/rex/ui/surface.h
+index a302000..d78c0b0 100644
+--- a/include/rex/ui/surface.h
++++ b/include/rex/ui/surface.h
+@@ -36,6 +36,8 @@ class Surface {
+     kTypeIndex_Win32Hwnd,
+     // macOS — CAMetalLayer presented via MoltenVK (VK_EXT_metal_surface).
+     kTypeIndex_CAMetalLayer,
++    // PlayStation 5 homebrew — the console's display, through VK_KHR_display.
++    kTypeIndex_Ps5Display,
+   };
+   using TypeFlags = uint32_t;
+   enum : TypeFlags {
+@@ -44,6 +46,7 @@ class Surface {
+     kTypeFlag_XcbWindow = TypeFlags(1) << kTypeIndex_XcbWindow,
+     kTypeFlag_Win32Hwnd = TypeFlags(1) << kTypeIndex_Win32Hwnd,
+     kTypeFlag_CAMetalLayer = TypeFlags(1) << kTypeIndex_CAMetalLayer,
++    kTypeFlag_Ps5Display = TypeFlags(1) << kTypeIndex_Ps5Display,
+   };
+ 
+   Surface(const Surface& surface) = delete;
+diff --git a/include/rex/ui/surface_ps5.h b/include/rex/ui/surface_ps5.h
+new file mode 100644
+index 0000000..01dba4e
+--- /dev/null
++++ b/include/rex/ui/surface_ps5.h
+@@ -0,0 +1,39 @@
++/**
++ * @file        rex/ui/surface_ps5.h
++ * @brief       Presentation surface for PlayStation 5 homebrew.
++ *
++ * The console has no window system. The Vulkan driver presents to the display
++ * itself through VK_KHR_display, so the surface is just the display at a
++ * chosen size; the presenter picks the display mode of that size when it
++ * creates the Vulkan surface.
++ */
++
++#pragma once
++
++#include <cstdint>
++
++#include <rex/ui/surface.h>
++
++namespace rex {
++namespace ui {
++
++class Ps5DisplaySurface final : public Surface {
++ public:
++  Ps5DisplaySurface(uint32_t width, uint32_t height) : width_(width), height_(height) {}
++
++  TypeIndex GetType() const override { return kTypeIndex_Ps5Display; }
++
++ protected:
++  bool GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const override {
++    width_out = width_;
++    height_out = height_;
++    return true;
++  }
++
++ private:
++  uint32_t width_;
++  uint32_t height_;
++};
++
++}  // namespace ui
++}  // namespace rex
+diff --git a/include/rex/ui/vulkan/instance.h b/include/rex/ui/vulkan/instance.h
+index 4edde2b..81f8d34 100644
+--- a/include/rex/ui/vulkan/instance.h
++++ b/include/rex/ui/vulkan/instance.h
+@@ -91,6 +91,9 @@ class VulkanInstance {
+   // supported (with the `ext_major_minor_` prefix rather than `ext_`).
+   struct Extensions {
+     bool ext_KHR_surface = false;  // #1
++#if REX_PLATFORM_PS5
++    bool ext_KHR_display = false;  // #3
++#endif
+ #ifdef VK_USE_PLATFORM_XCB_KHR
+     bool ext_KHR_xcb_surface = false;  // #6
+ #endif
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
 index 1ddafd0..3e873dc 100644
 --- a/src/core/CMakeLists.txt
@@ -1215,25 +1295,243 @@ index 5bd3dc5..5e450f4 100644
      find_package(PkgConfig REQUIRED)
      pkg_check_modules(X11_XCB REQUIRED x11-xcb)
      # Required, not optional: vulkan/api.h pulls in <wayland-client.h> on every
+diff --git a/src/ui/vulkan/vulkan_instance.cpp b/src/ui/vulkan/vulkan_instance.cpp
+index 914b311..cfa4e0e 100644
+--- a/src/ui/vulkan/vulkan_instance.cpp
++++ b/src/ui/vulkan/vulkan_instance.cpp
+@@ -27,6 +27,15 @@
+ 
+ REXCVAR_DEFINE_BOOL(vulkan_log_debug_messages, true, "UI/Vulkan", "Log Vulkan debug messages");
+ 
++#if REX_PLATFORM_PS5
++// The statically linked driver's entry point. The driver is an ICD with no
++// loader in front of it, so the name is the ICD interface's, and every other
++// function comes from it. Weak: see VulkanInstance::Create.
++extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance,
++                                                                              const char* name)
++    __attribute__((weak));
++#endif
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -74,6 +83,21 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+     }
+     return nullptr;
+   }
++#elif REX_PLATFORM_PS5
++  // No loader library and no way to open one: the driver is linked into the
++  // executable (an installed title cannot load a graphics module at run
++  // time). Its entry points are weak references, so a build without the
++  // driver, such as a payload, still links and simply has no Vulkan.
++  loader_loaded = &::vk_icdGetInstanceProcAddr != nullptr;
++  if (!loader_loaded) {
++    REXLOG_ERROR("No Vulkan driver is linked into this executable");
++    return nullptr;
++  }
++  ifn.vkGetInstanceProcAddr = &::vk_icdGetInstanceProcAddr;
++  // An ICD only hands this out for a real instance; it is fetched again once
++  // one exists.
++  ifn.vkDestroyInstance =
++      PFN_vkDestroyInstance(ifn.vkGetInstanceProcAddr(nullptr, "vkDestroyInstance"));
+ #else
+   loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
+   if (!loader_loaded) {
+@@ -82,11 +106,13 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+   }
+ #endif
+ 
++#if !REX_PLATFORM_PS5
+ #define XE_VULKAN_LOAD_LOADER_FUNCTION(name) \
+   functions_loaded &= (ifn.name = vulkan_instance->loader_.GetSymbol<PFN_##name>(#name)) != nullptr;
+   XE_VULKAN_LOAD_LOADER_FUNCTION(vkGetInstanceProcAddr);
+   XE_VULKAN_LOAD_LOADER_FUNCTION(vkDestroyInstance);
+ #undef XE_VULKAN_LOAD_LOADER_FUNCTION
++#endif
+   if (!functions_loaded) {
+     REXLOG_ERROR("Failed to get Vulkan loader function pointers");
+     return nullptr;
+@@ -140,6 +166,11 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+   if (with_surface) {
+     // #1.
+     requested_extensions.emplace("VK_KHR_surface", &vulkan_instance->extensions_.ext_KHR_surface);
++#if REX_PLATFORM_PS5
++    // #3. The console has no window system; the driver presents to the
++    // display itself.
++    requested_extensions.emplace("VK_KHR_display", &vulkan_instance->extensions_.ext_KHR_display);
++#endif
+ #ifdef VK_USE_PLATFORM_XCB_KHR
+     // #6.
+     requested_extensions.emplace("VK_KHR_xcb_surface",
+@@ -384,6 +415,13 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+     return nullptr;
+   }
+ 
++#if REX_PLATFORM_PS5
++  if (!ifn.vkDestroyInstance) {
++    ifn.vkDestroyInstance = PFN_vkDestroyInstance(
++        ifn.vkGetInstanceProcAddr(vulkan_instance->instance_, "vkDestroyInstance"));
++  }
++#endif
++
+   // Load instance functions.
+ 
+ #define XE_UI_VULKAN_FUNCTION(name)                                                            \
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..072cc3f 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -45,6 +45,9 @@
+ #if REX_PLATFORM_MAC
+ #include <rex/ui/surface_mac.h>
+ #endif
++#if REX_PLATFORM_PS5
++#include <rex/ui/surface_ps5.h>
++#endif
+ 
+ REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
+                     "Clear render pass during presentation");
+@@ -105,6 +108,90 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FfxVkGetDeviceProcAddrCompat(VkDevice d
+ }  // namespace
+ #endif  // defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
+ 
++#if REX_PLATFORM_PS5
++namespace {
++
++// A VK_KHR_display surface on the console's display: the first display, the
++// mode whose visible region is the requested size (the first mode if none
++// is), on the first plane. Everything found is logged, since what the driver
++// reports is only known from running it.
++VkResult CreatePs5DisplaySurface(PFN_vkGetInstanceProcAddr get_instance_proc_addr,
++                                 VkInstance instance, VkPhysicalDevice physical_device,
++                                 uint32_t width, uint32_t height, VkSurfaceKHR* surface_out) {
++  const auto get_displays = PFN_vkGetPhysicalDeviceDisplayPropertiesKHR(
++      get_instance_proc_addr(instance, "vkGetPhysicalDeviceDisplayPropertiesKHR"));
++  const auto get_modes = PFN_vkGetDisplayModePropertiesKHR(
++      get_instance_proc_addr(instance, "vkGetDisplayModePropertiesKHR"));
++  const auto get_planes = PFN_vkGetPhysicalDeviceDisplayPlanePropertiesKHR(
++      get_instance_proc_addr(instance, "vkGetPhysicalDeviceDisplayPlanePropertiesKHR"));
++  const auto create_surface = PFN_vkCreateDisplayPlaneSurfaceKHR(
++      get_instance_proc_addr(instance, "vkCreateDisplayPlaneSurfaceKHR"));
++  if (!get_displays || !get_modes || !get_planes || !create_surface) {
++    REXLOG_ERROR("VulkanPresenter: the driver has no VK_KHR_display entry points");
++    return VK_ERROR_EXTENSION_NOT_PRESENT;
++  }
++
++  uint32_t display_count = 0;
++  get_displays(physical_device, &display_count, nullptr);
++  std::vector<VkDisplayPropertiesKHR> displays(display_count);
++  if (!display_count ||
++      get_displays(physical_device, &display_count, displays.data()) < VK_SUCCESS) {
++    REXLOG_ERROR("VulkanPresenter: no display reported by the driver");
++    return VK_ERROR_INITIALIZATION_FAILED;
++  }
++  const VkDisplayPropertiesKHR& display = displays[0];
++  REXLOG_INFO("VulkanPresenter: {} display(s); using '{}', {}x{}", display_count,
++              display.displayName ? display.displayName : "",
++              display.physicalResolution.width, display.physicalResolution.height);
++
++  uint32_t mode_count = 0;
++  get_modes(physical_device, display.display, &mode_count, nullptr);
++  std::vector<VkDisplayModePropertiesKHR> modes(mode_count);
++  if (!mode_count ||
++      get_modes(physical_device, display.display, &mode_count, modes.data()) < VK_SUCCESS) {
++    REXLOG_ERROR("VulkanPresenter: the display reports no modes");
++    return VK_ERROR_INITIALIZATION_FAILED;
++  }
++  const VkDisplayModePropertiesKHR* chosen = nullptr;
++  for (const VkDisplayModePropertiesKHR& mode : modes) {
++    REXLOG_INFO("VulkanPresenter: display mode {}x{} at {} mHz", mode.parameters.visibleRegion.width,
++                mode.parameters.visibleRegion.height, mode.parameters.refreshRate);
++    if (!chosen && mode.parameters.visibleRegion.width == width &&
++        mode.parameters.visibleRegion.height == height) {
++      chosen = &mode;
++    }
++  }
++  if (!chosen) {
++    chosen = &modes[0];
++    REXLOG_WARN("VulkanPresenter: no {}x{} display mode; using the first one", width, height);
++  }
++
++  uint32_t plane_count = 0;
++  get_planes(physical_device, &plane_count, nullptr);
++  if (!plane_count) {
++    REXLOG_ERROR("VulkanPresenter: the driver reports no display planes");
++    return VK_ERROR_INITIALIZATION_FAILED;
++  }
++
++  VkDisplaySurfaceCreateInfoKHR create_info = {};
++  create_info.sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR;
++  create_info.displayMode = chosen->displayMode;
++  create_info.planeIndex = 0;
++  create_info.planeStackIndex = 0;
++  create_info.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++  create_info.globalAlpha = 1.0f;
++  create_info.alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
++  create_info.imageExtent = chosen->parameters.visibleRegion;
++  const VkResult result = create_surface(instance, &create_info, nullptr, surface_out);
++  REXLOG_INFO("VulkanPresenter: display surface {}x{} at {} mHz, {} plane(s): result {}",
++              create_info.imageExtent.width, create_info.imageExtent.height,
++              chosen->parameters.refreshRate, plane_count, static_cast<int>(result));
++  return result;
++}
++
++}  // namespace
++#endif  // REX_PLATFORM_PS5
++
+ // Generated with `xb buildshaders`.
+ namespace shaders {
+ #include "../shaders/vulkan_spirv/guest_output_bilinear_dither_ps.h"
+@@ -445,6 +532,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+   if (instance_extensions.ext_EXT_metal_surface) {
+     type_flags |= Surface::kTypeFlag_CAMetalLayer;
+   }
++#endif
++#if REX_PLATFORM_PS5
++  if (instance_extensions.ext_KHR_display) {
++    type_flags |= Surface::kTypeFlag_Ps5Display;
++  }
+ #endif
+   return type_flags;
+ }
+@@ -857,6 +949,13 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+         vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
+             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
+       } break;
++#endif
++#if REX_PLATFORM_PS5
++      case Surface::kTypeIndex_Ps5Display: {
++        vulkan_surface_create_result = CreatePs5DisplaySurface(
++            ifn.vkGetInstanceProcAddr, instance, vulkan_device_->physical_device(),
++            new_surface_width, new_surface_height, &paint_context_.vulkan_surface);
++      } break;
+ #endif
+       default:
+         assert_unhandled_case(surface_type);
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..0b2d999 100644
+index 2251429..b883bf7 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
-@@ -35,6 +35,8 @@
+@@ -35,6 +35,9 @@
  #include <SDL3/SDL_metal.h>
  
  #include <rex/ui/surface_mac.h>
 +#elif REX_PLATFORM_PS5
 +// No window system. The Vulkan backend presents through VK_KHR_display.
++#include <rex/ui/surface_ps5.h>
  #else
  #include <X11/Xlib-xcb.h>
  #include <rex/ui/surface_gnulinux.h>
-@@ -398,6 +400,8 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -398,6 +401,12 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
 +#elif REX_PLATFORM_PS5
-+  (void)allowed_types;
++  // The window is SDL's offscreen one and stands for the whole display. 1080p
++  // for now: the guest renders at 720p and the presenter scales.
++  if (allowed_types & Surface::kTypeFlag_Ps5Display) {
++    return std::make_unique<Ps5DisplaySurface>(1920, 1080);
++  }
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {

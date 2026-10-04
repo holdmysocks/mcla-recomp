@@ -15,10 +15,10 @@ The recompiled game code and `src/` are shared with PC unchanged. What changes i
 | # | Milestone | Verified by | Status |
 |---|---|---|---|
 | P1 | Runtime builds for PS5 | Build log | **Done 2026-10-03.** `librexruntime.a` (22.9 MB) and `librexgpu-xenos.a` (7.7 MB) built with the runtime's own CMake: 184 steps, 0 failures. Not linked into a title yet |
-| P2 | Guest memory arena runs on the console using the runtime's own code | Title prints the arena base and passes view, alias and protection checks | Passes as a payload (steps 1 to 4); not run as a title |
-| P3 | Fault handler works on the console | Title takes a write-watch fault through the runtime's handler and resumes | Unprotect-and-retry passes as a payload (step 5); register-changing cases not run |
+| P2 | Guest memory arena runs on the console using the runtime's own code | Title prints the arena base and passes view, alias and protection checks | **Done 2026-10-03**, as a payload (shared object) and as a title (direct memory) |
+| P3 | Fault handler works on the console | Title takes a write-watch fault through the runtime's handler and resumes | **Done 2026-10-03**, as a payload and as a title: retry, skip and emulated load. XMM write-back untested |
 | P4 | Runtime links for PS5 with the game code, no graphics | Link succeeds; title starts the guest entry point and logs kernel calls | **Done 2026-10-03, as a payload.** Guest code runs on the console: kernel imports resolved, volume calls made, and the game reached video setup (`VdInitializeRingBuffer`), where it stalls for lack of a graphics system as expected. 20 s run, no crash |
-| P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | Not started |
+| P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | In progress: the Vulkan device and presenter are created on the console (stage 5). Surface, swapchain and a presented frame not yet |
 | P6 | Boots to the title screen | Screenshot or user report | Not started |
 | P7 | Audio output and controller input | User report | Not started |
 | P8 | Performance on the console | Per-frame counters read back | Not started |
@@ -103,7 +103,38 @@ A constructor with priority 101 that installs a crash reporter (signal number, f
 
 Game data was uploaded to `/data/mcla/game` over FTP (13 files, 6.2 GB, sizes verified). Not tested: anything past video setup, more than one guest thread doing real work, write-watch faults under load, running as a title.
 
+### The same as an installed title (2026-10-03)
+
+`TITLE=<id> ps5/game/build.sh <stage>` links the same objects with the Vulkan driver through `ps5/title_build.sh` (a 77 MB executable). Three more libc functions had no definition in the title link (`getresuid`, `getresgid`, `timegm`) and are in `ps5/title_support.c` with the six null imports. The host sends its own lines and the runtime's log to the title log connection.
+
+| Stage | Result as a title |
+|---|---|
+| 1 `Runtime::Setup` | Pass. Arena on direct memory at 0x200020000. `/data/mcla/game` is readable from inside the title |
+| 4 XEX load, main thread, 20 s of guest code | Pass. Same sequence as the payload run: volume calls, then `VdSetGraphicsInterruptCallback`, `VdInitializeRingBuffer` and `VdEnableRingBufferRPtrWriteBack` ignored for lack of a GPU system; alive to the end |
+
+So the game runs as a title up to the point where it needs graphics. Of the title's 418 imports, four were not covered by the console import check (`fork`, `vfork`, `setsid`, `_Unwind_Backtrace`).
+
 Checked before any console run: no executable section outside `.text`, no TLS segment (thread-locals use emulated TLS), and `symcheck` reports 0 of 311 imports missing on the console.
+
+## P5: graphics, in stages
+
+The Vulkan driver only works in an installed title, and a title cannot load a module at run time, so everything is linked in and found without a loader.
+
+Runtime changes (in the SDK patch):
+
+- **Vulkan bootstrap** (`vulkan_instance.cpp`): on PS5 there is no loader library. The driver is an ICD linked into the executable, so the instance code takes `vk_icdGetInstanceProcAddr` (a weak reference; a build without the driver, such as a payload, links and reports "no Vulkan driver") and gets every other function from it.
+- **Surface type** (`surface.h`, `surface_ps5.h`, `vulkan_presenter.cpp`, `window_sdl.cpp`): `kTypeIndex_Ps5Display`, supported when the instance has `VK_KHR_display`. The presenter creates the Vulkan surface with `vkCreateDisplayPlaneSurfaceKHR` on the first display and plane, using the mode whose visible region is the surface size (1920x1080 for now; the guest renders at 720p and the presenter scales), and logs every display and mode the driver reports. SDL is built with its offscreen video driver, so the existing SDL window can stand for the display.
+- **GPU plugin**: linked statically; the host calls its factory `rex_gpu_create` directly instead of loading `rexgpu-xenos` by name.
+
+Host stages (`ps5/game/main_ps5.cpp`):
+
+| Stage | What it does | Result |
+|---|---|---|
+| 5 | Create the Xenos graphics system on Vulkan and call `SetupPresentation` with no window: instance, device, presenter | **Pass on the console.** Instance API 1.4.354 with `VK_KHR_display`, `VK_KHR_surface`, `VK_EXT_debug_utils`; device `PlayStation 5 GPU (RADV NAVI21)` with `VK_KHR_swapchain`, `VK_EXT_custom_border_color`, `VK_EXT_fragment_shader_interlock`, `VK_EXT_memory_budget`, `VK_EXT_non_seamless_cube_map`, `VK_EXT_robustness2`, `VK_EXT_shader_stencil_export`; presenter created |
+| 6 | A window on SDL's offscreen video driver standing for the display; attaching the presenter makes the `VK_KHR_display` surface and the swapchain; the message loop runs with a repaint requested every second. No guest code | Built as a title; not run |
+| 7 (to write) | The game with the graphics system attached | |
+
+The stage 5 title imports eight functions the console import check did not cover: `__pthread_cleanup_pop_imp`, `__pthread_cleanup_push_imp`, `nanf`, `pthread_setcancelstate`, and the four from before (`fork`, `vfork`, `setsid`, `_Unwind_Backtrace`). A null one would show as a jump to address 0 in the crash report.
 
 ## Console crash on the first P2/P3 run (2026-10-03)
 
@@ -169,7 +200,7 @@ Costs and open points of the direct-memory backing:
 
 - It is **eager**: 4.5 GiB of the title's 12 GiB is taken at start, whether the guest uses it or not. A shared object is committed page by page. Enough for now; the unused guest ranges could be left unbacked later.
 - Decommit still calls `madvise(MADV_DONTNEED)`, whose effect on direct memory is unknown. If the guest relies on decommitted pages reading as zero when recommitted, that needs handling.
-- Not yet run as a title.
+- **Step 9 as a title with this backing: pass, 35 of 35** (`Memory::Initialize`, the four virtual heaps, the physical heap through all four views, protection, the system heap, the 256 MiB commit, teardown). Arena at 0x200020000 on direct offset 0x2400000.
 
 Rules adopted for further console runs:
 
