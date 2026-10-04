@@ -104,7 +104,9 @@ void EarlyCrash(int signal_number, siginfo_t* info, void* context) {
   int printed = 0;
   for (int i = 0; i < 1024 && printed < 16; ++i) {
     const uint64_t word = stack[i];
-    if (word > anchor - 0x20000000 && word < anchor + 0x20000000) {
+    // A title is loaded at 0x400000, below the range: do not let the lower bound wrap.
+    const uint64_t low = anchor > 0x20000000 ? anchor - 0x20000000 : 0x1000;
+    if (word > low && word < anchor + 0x20000000) {
       EarlyHex("  stack code pointer ", word);
       ++printed;
     }

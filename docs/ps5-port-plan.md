@@ -144,7 +144,7 @@ Two things learned about titles from these runs:
 - **`dup2` onto descriptors 1 and 2 fails with `EPERM` in a title.** Standard output cannot be redirected to a socket, so a title's log has to be written to the connection itself (`g_mcla_log_fd` in `ps5/title_log.h`). The runtime's log will need a sink of its own for the game title.
 - A title can listen on a TCP port and accept a connection from the PC before `main` runs.
 
-The memory steps have not been run as a title yet (step 9 runs 1 to 4 together).
+Step 9 (the memory steps together) **fails as a title**: the process dies inside `Memory::Initialize` with a jump to address 0, caught by the crash reporter; the console is unaffected. A jump to 0 is a call through an import that no module available to a title exports (a payload is given a different kernel library, which is why the same code passes there). `ps5/probes/symcheck/title_main.cpp` is a print-only title that lists every such import.
 
 Rules adopted for further console runs:
 
