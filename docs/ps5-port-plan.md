@@ -18,7 +18,7 @@ The recompiled game code and `src/` are shared with PC unchanged. What changes i
 | P2 | Guest memory arena runs on the console using the runtime's own code | Title prints the arena base and passes view, alias and protection checks | **Done 2026-10-03**, as a payload (shared object) and as a title (direct memory) |
 | P3 | Fault handler works on the console | Title takes a write-watch fault through the runtime's handler and resumes | **Done 2026-10-03**, as a payload and as a title: retry, skip and emulated load. XMM write-back untested |
 | P4 | Runtime links for PS5 with the game code, no graphics | Link succeeds; title starts the guest entry point and logs kernel calls | **Done 2026-10-03, as a payload.** Guest code runs on the console: kernel imports resolved, volume calls made, and the game reached video setup (`VdInitializeRingBuffer`), where it stalls for lack of a graphics system as expected. 20 s run, no crash |
-| P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | In progress: the Vulkan device and presenter are created on the console (stage 5). Surface, swapchain and a presented frame not yet |
+| P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | **Device, display surface and swapchain created on the console** (stages 5 and 6, 2026-10-03). Whether a frame is visibly presented has not been confirmed by eye |
 | P6 | Boots to the title screen | Screenshot or user report | Not started |
 | P7 | Audio output and controller input | User report | Not started |
 | P8 | Performance on the console | Per-frame counters read back | Not started |
@@ -126,13 +126,15 @@ Runtime changes (in the SDK patch):
 - **Surface type** (`surface.h`, `surface_ps5.h`, `vulkan_presenter.cpp`, `window_sdl.cpp`): `kTypeIndex_Ps5Display`, supported when the instance has `VK_KHR_display`. The presenter creates the Vulkan surface with `vkCreateDisplayPlaneSurfaceKHR` on the first display and plane, using the mode whose visible region is the surface size (1920x1080 for now; the guest renders at 720p and the presenter scales), and logs every display and mode the driver reports. SDL is built with its offscreen video driver, so the existing SDL window can stand for the display.
 - **GPU plugin**: linked statically; the host calls its factory `rex_gpu_create` directly instead of loading `rexgpu-xenos` by name.
 
+Known loose end from stage 6: the surface reports 1920x1080 but the only display mode on the test console (a 4K television) is 3840x2160, so the swapchain is 4K while the presenter believes the surface is 1080p. The surface should take its size from the display mode; on a 1080p display the mode list will differ and has not been seen.
+
 Host stages (`ps5/game/main_ps5.cpp`):
 
 | Stage | What it does | Result |
 |---|---|---|
 | 5 | Create the Xenos graphics system on Vulkan and call `SetupPresentation` with no window: instance, device, presenter | **Pass on the console.** Instance API 1.4.354 with `VK_KHR_display`, `VK_KHR_surface`, `VK_EXT_debug_utils`; device `PlayStation 5 GPU (RADV NAVI21)` with `VK_KHR_swapchain`, `VK_EXT_custom_border_color`, `VK_EXT_fragment_shader_interlock`, `VK_EXT_memory_budget`, `VK_EXT_non_seamless_cube_map`, `VK_EXT_robustness2`, `VK_EXT_shader_stencil_export`; presenter created |
-| 6 | A window on SDL's offscreen video driver standing for the display; attaching the presenter makes the `VK_KHR_display` surface and the swapchain; the message loop runs with a repaint requested every second. No guest code | Built as a title; not run |
-| 7 (to write) | The game with the graphics system attached | |
+| 6 | A window on SDL's offscreen video driver standing for the display; attaching the presenter makes the `VK_KHR_display` surface and the swapchain; the message loop runs with a repaint requested every second. No guest code | **Pass on the console.** SDL video driver `offscreen`. One display, `PS5 VideoOut`, 3840x2160, with one mode: 3840x2160 at 59.94 Hz. One plane. Surface created; swapchain 3840x2160, format 44 (`B8G8R8A8_UNORM`), present mode 2 (FIFO). The message loop ran its 10 s and ended normally |
+| 7 | The game with graphics: the window and graphics system of stage 6 handed to the runtime, shader storage under `/data/mcla/cache`, then the guest runs with the message loop on the main thread | Built as a title; not run |
 
 The stage 5 title imports eight functions the console import check did not cover: `__pthread_cleanup_pop_imp`, `__pthread_cleanup_push_imp`, `nanf`, `pthread_setcancelstate`, and the four from before (`fork`, `vfork`, `setsid`, `_Unwind_Backtrace`). A null one would show as a jump to address 0 in the crash report.
 

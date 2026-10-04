@@ -25,6 +25,9 @@
 //      the VK_KHR_display surface and the swapchain; the message loop then
 //      runs for MCLA_RUN_SECONDS with a repaint requested every second. No
 //      guest code, so the picture is whatever the presenter clears to
+//   7  the game with graphics (title): the window and graphics system of
+//      stage 6 handed to the runtime, then stage 4's run with the message
+//      loop on the main thread
 
 #include "generated/default/mcla_init.h"
 
@@ -287,14 +290,53 @@ int main() {
   }
 #endif
 
+#if MCLA_STAGE >= 7
+  // Presentation first, as the desktop host does: the graphics system has to
+  // know it will present before the runtime wires it to the guest.
+  NEXT("SDL application context on the offscreen video driver");
+  rex::cvar::SetFlagByName("video_driver", "offscreen");
+  rex::ui::SDLWindowedAppContext app_context;
+  if (!app_context.Initialize()) {
+    return Finish("the SDL application context did not initialise", 9);
+  }
+  NEXT("create the Xenos graphics system (Vulkan backend)");
+  rex::system::GpuCreateInfo gpu_create_info;
+  gpu_create_info.struct_size = sizeof gpu_create_info;
+  gpu_create_info.backend = "vulkan";
+  std::unique_ptr<rex::system::IGraphicsSystem> graphics(
+      rex_gpu_create(rex::system::kGpuPluginAbiVersion, &gpu_create_info));
+  if (!graphics) {
+    return Finish("the GPU plugin returned no graphics system", 7);
+  }
+  NEXT("SetupPresentation with the application context");
+  if (XFAILED(graphics->SetupPresentation(&app_context)) || !graphics->presenter()) {
+    return Finish("graphics setup failed", 8);
+  }
+  NEXT("create and open the window, attach the presenter");
+  auto window = rex::ui::Window::Create(app_context, "mcla", 1280, 720);
+  if (!window || !window->Open()) {
+    return Finish("no window", 10);
+  }
+  window->SetPresenter(graphics->presenter());
+#endif
+
   NEXT("construct rex::Runtime");
   auto runtime = std::make_unique<rex::Runtime>(game_root, user_root, std::filesystem::path(),
                                                 cache_root, std::filesystem::path());
+#if MCLA_STAGE >= 7
+  runtime->set_app_context(&app_context);
+  runtime->set_display_window(window.get());
+#endif
 
   rex::RuntimeConfig config;
   config.audio_factory = &CreateMclaAudioSystem;
   config.kernel_init = rex::kernel::InitializeKernel;
+#if MCLA_STAGE >= 7
+  config.graphics = std::move(graphics);
+  // No input system yet: P7.
+#else
   // No graphics system and no input system: P5 and P7.
+#endif
 
   rex::PPCImageInfo image = PPCImageConfig;
   NEXT("Runtime::Setup (guest memory, function table, kernel state, file systems)");
@@ -336,12 +378,34 @@ int main() {
   Line("PASS main guest thread created");
   if (MCLA_STAGE <= 3) return Finish("stage 3 complete", 0);
 
+#if MCLA_STAGE >= 7
+  if (runtime->graphics_system()) {
+    NEXT("initialise shader storage under %s", cache_root.c_str());
+    runtime->graphics_system()->InitializeShaderStorage(cache_root, runtime->kernel_state()->title_id(),
+                                                        true);
+  }
+#endif
+
   NEXT("resume the main guest thread; guest code runs from here");
   main_thread->Resume();
 
+#if MCLA_STAGE >= 7
+  // The message loop needs this thread; a second one reports and ends the run.
+  std::thread ticker([&app_context]() {
+    for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      Line("alive: %d s", second);
+    }
+    Finish("run time reached", 0);
+  });
+  app_context.RunMainMessageLoop();
+  ticker.join();
+  return Finish("the message loop ended", 0);
+#else
   for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     Line("alive: %d s", second);
   }
   return Finish("run time reached", 0);
+#endif
 }
