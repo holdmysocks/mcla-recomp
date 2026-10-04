@@ -253,6 +253,8 @@ With pipelines stored (611 at start-up), a 490 s run had no crash and one sustai
 
 The GPU command thread tops out at about 220,000 issued draws a second (about 4.5 us each); the main guest thread is then about 61% in its GPU wait. Nothing dominates the thread: driver state emission about 11%, `UpdateBindings` and descriptor updates about 16%, register writes 8-11%, submission about 18% (`vkQueueSubmit` goes from 5 to about 180 ms per second). The driver is the release build, assertions off. The count is of `IssueDraw` calls, including any discarded early (loading screens show very high counts). The same ceiling is what a 60 target runs into (28-44 presents/s measured). `MCLA_PROFILE_DIPS_FROM` sets how soon after launch dip profiles may start.
 
+Link-time optimisation of the runtime (configure it with `-flto=thin` added to `CMAKE_C_FLAGS` and `CMAKE_CXX_FLAGS`; the title link takes the bitcode archives as they are, and the title is 1.8 MB smaller): map view 227,000-250,000 draws/s against 210,000-230,000, so 5-8%. Ran 75 s on the console with no fault. The count of draws that reach the host (`to the host` in the `FPS` lines) is 98-99% of those issued. `vkQueueSubmit` takes 180-200 ms of each second in the map view against about 6 ms when driving, at about the same number of submissions, so its cost follows the number of draws.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

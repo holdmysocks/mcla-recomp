@@ -84,6 +84,7 @@ void SharedMemoryCounters(uint64_t out[10]);
 namespace vulkan {
 void SubmissionCounters(uint64_t out[4]);
 uint64_t DrawCounter();
+uint64_t HostDrawCounter();
 }
 }
 
@@ -794,8 +795,12 @@ int main() {
         rex::graphics::vulkan::SubmissionCounters(submission);
         static uint64_t dip_last_draws = 0;
         const uint64_t dip_draws = rex::graphics::vulkan::DrawCounter();
-        Line("FPS %d s: %u; %llu draws; %llu submits taking %llu ms, %llu fence waits taking %llu ms",
+        static uint64_t dip_last_host_draws = 0;
+        const uint64_t dip_host_draws = rex::graphics::vulkan::HostDrawCounter();
+        Line("FPS %d s: %u; %llu draws, %llu to the host; %llu submits taking %llu ms, %llu fence "
+             "waits taking %llu ms",
              second, in_second, static_cast<unsigned long long>(dip_draws - dip_last_draws),
+             static_cast<unsigned long long>(dip_host_draws - dip_last_host_draws),
              static_cast<unsigned long long>(submission[0] - dip_last_submission[0]),
              static_cast<unsigned long long>((submission[1] - dip_last_submission[1]) / 1000),
              static_cast<unsigned long long>(submission[2] - dip_last_submission[2]),
@@ -804,6 +809,7 @@ int main() {
           dip_last_submission[i] = submission[i];
         }
         dip_last_draws = dip_draws;
+        dip_last_host_draws = dip_host_draws;
         if (second > MCLA_PROFILE_DIPS_FROM && in_second < MCLA_PROFILE_DIPS && dip_profiles < 4 &&
             second - dip_last_second >= 30) {
           ++dip_profiles;
