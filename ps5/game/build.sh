@@ -36,6 +36,7 @@ cmp -s "$work/src/ps5/main_ps5.cpp.new" "$work/src/ps5/main_ps5.cpp" 2>/dev/null
     && rm "$work/src/ps5/main_ps5.cpp.new" \
     || mv "$work/src/ps5/main_ps5.cpp.new" "$work/src/ps5/main_ps5.cpp"
 tr -d '\r' < "$here/ps5_pad_input.h" > "$work/src/ps5/ps5_pad_input.h"
+tr -d '\r' < "$here/ps5_audio.h" > "$work/src/ps5/ps5_audio.h"
 for header in title_log.h log_fd_sink.h; do
     tr -d '\r' < "$here/../$header" > "$work/src/ps5/$header"
 done

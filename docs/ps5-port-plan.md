@@ -20,7 +20,7 @@ The recompiled game code and `src/` are shared with PC unchanged. What changes i
 | P4 | Runtime links for PS5 with the game code, no graphics | Link succeeds; title starts the guest entry point and logs kernel calls | **Done 2026-10-03, as a payload.** Guest code runs on the console: kernel imports resolved, volume calls made, and the game reached video setup (`VdInitializeRingBuffer`), where it stalls for lack of a graphics system as expected. 20 s run, no crash |
 | P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | **Done 2026-10-04.** Device, `VK_KHR_display` surface, swapchain; frames presented and visible once the shell's launch splash is hidden |
 | P6 | Boots to the title screen | Screenshot or user report | **Done 2026-10-04 (user report):** intro movies, then the title screen, as an installed title. About 14 presents a second once the game is drawing; picture size and placement not yet checked against the 4K mode |
-| P7 | Audio output and controller input | User report | Not started |
+| P7 | Audio output and controller input | User report | **Done 2026-10-04 (user reports):** controller through the console's pad library, sound through its audio library (stereo) |
 | P8 | Performance on the console | Per-frame counters read back | Not started |
 
 ## Changes made so far (P1)
@@ -167,7 +167,7 @@ The stage 5 title imports eight functions the console import check did not cover
 
 **Input works.** `ps5/game/ps5_pad_input.h` on the console's pad library; the user played with it: menus, career, driving in the city. Full screen, correct proportions on a 4K display.
 
-**No audio yet.** SDL's only audio driver here is `dsp`, which finds no device; the silent fallback runs. An audio output driver on the console's own audio library is still to write.
+**Audio works (2026-10-04, user: "worked perfectly").** `ps5/game/ps5_audio.h` is an output driver on the console's audio library: `sceAudioOutOpen` on the main port, 256 samples at 48 kHz, float stereo; each guest frame (256 samples, six channels, big-endian) is folded to stereo with the runtime's own conversion and handed to `sceAudioOutOutput`, whose blocking is the pacing. The main port has to be opened as the system user (255): with the logged-in user's id it returns 0x80260011. It is offered to the game's audio fallback through `g_mcla_platform_audio_driver` in `src/audio_fallback.cpp`, tried before SDL; the desktop build has not been rebuilt with that hook yet. Stereo only so far.
 
 **Performance is the open problem: 8 to 17 presents a second, choppy, physics feel wrong.** What has been measured:
 

@@ -25,6 +25,13 @@
 REXCVAR_DEFINE_STRING(mcla_audio, "sdl", "MCLA",
                       "Audio output: sdl (falls back to silent if no device), or none");
 
+// A platform with its own audio output (the PS5 host) sets this to a function
+// that makes a driver, or returns nullptr if it cannot; it is tried before
+// SDL. The driver is deleted through its virtual destructor.
+rex::audio::AudioDriver* (*g_mcla_platform_audio_driver)(rex::memory::Memory* memory,
+                                                         rex::thread::Semaphore* semaphore) =
+    nullptr;
+
 namespace {
 
 using rex::X_STATUS;
@@ -76,6 +83,13 @@ class FallbackAudioSystem : public rex::audio::sdl::SDLAudioSystem {
   X_STATUS CreateDriver(size_t index, rex::thread::Semaphore* semaphore,
                         rex::audio::AudioDriver** out_driver) override {
     if (REXCVAR_GET(mcla_audio) != "none") {
+      if (g_mcla_platform_audio_driver) {
+        if (auto* driver = g_mcla_platform_audio_driver(memory_, semaphore)) {
+          platform_driver_ = driver;
+          *out_driver = driver;
+          return X_STATUS_SUCCESS;
+        }
+      }
       if (SDLAudioSystem::CreateDriver(index, semaphore, out_driver) == X_STATUS_SUCCESS) {
         return X_STATUS_SUCCESS;
       }
@@ -86,12 +100,20 @@ class FallbackAudioSystem : public rex::audio::sdl::SDLAudioSystem {
   }
 
   void DestroyDriver(rex::audio::AudioDriver* driver) override {
+    if (driver == platform_driver_) {
+      platform_driver_ = nullptr;
+      delete driver;
+      return;
+    }
     if (auto* silent = dynamic_cast<SilentAudioDriver*>(driver)) {
       delete silent;
       return;
     }
     SDLAudioSystem::DestroyDriver(driver);
   }
+
+ private:
+  rex::audio::AudioDriver* platform_driver_ = nullptr;
 };
 
 }  // namespace

@@ -80,8 +80,14 @@ uint64_t Ps5FaultCount();
 #include "title_log.h"
 #include "log_fd_sink.h"
 #ifdef MCLA_TITLE
+#include "ps5_audio.h"
 #include "ps5_pad_input.h"
 #endif
+
+// Defined in src/audio_fallback.cpp: a platform's own audio output, tried
+// before SDL.
+extern rex::audio::AudioDriver* (*g_mcla_platform_audio_driver)(rex::memory::Memory* memory,
+                                                                rex::thread::Semaphore* semaphore);
 
 #ifndef MCLA_STAGE
 #define MCLA_STAGE 4
@@ -524,6 +530,15 @@ int main() {
   runtime->set_display_window(window.get());
 #endif
 
+#ifdef MCLA_TITLE
+  // Sound through the console's audio library (ps5_audio.h); if the port does
+  // not open, the game's own fallback carries on to SDL and then to silence.
+  g_mcla_platform_audio_driver = [](rex::memory::Memory* memory,
+                                    rex::thread::Semaphore* semaphore) -> rex::audio::AudioDriver* {
+    auto driver = std::make_unique<Ps5AudioDriver>(memory, semaphore);
+    return driver->Initialize() ? driver.release() : nullptr;
+  };
+#endif
   rex::RuntimeConfig config;
   config.audio_factory = &CreateMclaAudioSystem;
   config.kernel_init = rex::kernel::InitializeKernel;
