@@ -134,12 +134,12 @@ for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
     [[ -f $root/sce_sys/$asset ]] && cp "$root/sce_sys/$asset" "$app/sce_sys/$asset"
 done
 # ART_DIR: the title's own tile and backgrounds in the console's formats
-# (icon0.png, pic0.dds, pic1.dds), as tools/prepare-assets.sh in the driver
+# (icon0.png, pic0.dds, pic1.dds, and optionally a theme, snd0.at9), as tools/prepare-assets.sh in the driver
 # project writes them. For the game they are made from the user's own copy by
 # ps5/make_title_art.py; nothing of the kind is in the repository. Without
 # ART_DIR a title keeps the driver project's default art, as the probes do.
 if [[ -n ${ART_DIR:-} ]]; then
-    for asset in icon0.png pic0.dds pic1.dds; do
+    for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
         [[ -f $ART_DIR/$asset ]] && cp "$ART_DIR/$asset" "$app/sce_sys/$asset"
     done
 fi

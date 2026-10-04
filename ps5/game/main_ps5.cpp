@@ -295,7 +295,10 @@ void DumpRuntimeThreads(rex::system::KernelState* kernel_state) {
 // A sampling profiler out of the same signal: every runtime thread, `hertz`
 // times a second for `seconds`, one line per sample. ps5/profile_report.py
 // turns the lines into per-thread function counts on the PC.
-void ProfileRuntimeThreads(rex::system::KernelState* kernel_state, int seconds, int hertz) {
+// host_only: just the runtime's own threads (the GPU command thread among
+// them), which can then be sampled much more often.
+void ProfileRuntimeThreads(rex::system::KernelState* kernel_state, int seconds, int hertz,
+                           bool host_only = false) {
   Line("PROFILE begins: %d s at %d Hz, code anchor %p", seconds, hertz,
        reinterpret_cast<void*>(&EarlyAnchor));
   g_profile_sampling.store(true);
@@ -307,7 +310,7 @@ void ProfileRuntimeThreads(rex::system::KernelState* kernel_state, int seconds, 
       threads = kernel_state->object_table()->GetObjectsByType<rex::system::XThread>();
     }
     for (auto& thread : threads) {
-      if (thread && thread->thread()) {
+      if (thread && thread->thread() && !(host_only && thread->is_guest_thread())) {
         pthread_kill(reinterpret_cast<pthread_t>(thread->thread()->native_handle()), kDumpSignal);
       }
     }
@@ -468,6 +471,15 @@ int main() {
   // Presentation first, as the desktop host does: the graphics system has to
   // know it will present before the runtime wires it to the guest.
   NEXT("SDL application context on the offscreen video driver");
+#ifdef MCLA_TITLE
+  // The Vulkan driver reports on standard error (failures, and every 10 s
+  // where its submissions' time went), which in a title goes nowhere. Point
+  // the C library's stderr at the title log.
+  if (FILE* log_stream = fdopen(g_mcla_log_fd, "w")) {
+    setvbuf(log_stream, nullptr, _IOLBF, 0);
+    stderr = log_stream;
+  }
+#endif
   // What the in-game settings menu saved. Loaded before the host's own
   // settings below, which therefore win.
   g_mcla_settings_path = "/data/mcla/mcla.toml";
@@ -813,8 +825,8 @@ int main() {
         if (second > MCLA_PROFILE_DIPS_FROM && in_second < MCLA_PROFILE_DIPS && dip_profiles < 4 &&
             second - dip_last_second >= 30) {
           ++dip_profiles;
-          Line("DIP %d s: %u presents in the last second, profiling 5 s", second, in_second);
-          ProfileRuntimeThreads(runtime->kernel_state(), 5, 25);
+          Line("DIP %d s: %u presents in the last second, profiling the host threads for 5 s", second, in_second);
+          ProfileRuntimeThreads(runtime->kernel_state(), 5, 200, true);
           dip_last_second = second;
           dip_last_presents = rex::ui::vulkan::Ps5PresentCount();
         }
