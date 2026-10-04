@@ -58,7 +58,7 @@ Ported on 2026-10-03 as `src/settings_menu.cpp` and `config/settings_menu.toml` 
 |---|---|
 | DISPLAY | FPS TARGET (30, 60, 120, UNCAPPED), VSYNC, FULLSCREEN, MOTION BLUR, DEPTH OF FIELD |
 | PERFORMANCE | SINGLE TILE RENDERING, GPU WAIT YIELD |
-| CONTROLS | BUTTON PROMPTS (AUTO, XBOX, PLAYSTATION), SKIP INTRO (NO LOGO) |
+| CONTROLS | BUTTON PROMPTS (AUTO, XBOX, PLAYSTATION), INTRO (NORMAL, FAST, SKIP (NO LOGO)) |
 
 Changes apply immediately and are saved to `mcla.toml` beside the executable when the submenu is closed. Like LARecomp, it also enables the game's developer-only save button as "SAVE GAME".
 

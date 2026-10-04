@@ -67,8 +67,8 @@ address = 0x82563720
 registers = ["f0"]
 
 # --- Intro movies ------------------------------------------------------------
-# The intro movies are not paced by the engine timer and play fast once the
-# fixed step is removed.
+# The start-up legal screens and logos are not paced by the engine timer; they
+# are held to 30 per second in mcla_present_interval (see src/frame_timing.cpp).
 
 # 0x822C2F08: jumping to 0x822C2F7C skips the intro sequence.
 [[midasm_hook]]

@@ -47,6 +47,12 @@ REXCVAR_DEFINE_INT32(mcla_fps, 30, "MCLA",
 REXCVAR_DEFINE_BOOL(mcla_skip_intro, false, "MCLA",
                     "Skip the intro movies. Side effect: the title screen loses its logo");
 
+// The legal screens and logos at start-up. "skip" is mcla_skip_intro by
+// another name, so that the settings menu can offer all three in one row.
+REXCVAR_DEFINE_STRING(mcla_intro, "normal", "MCLA",
+                      "Start-up legal screens and logos: normal (original speed), fast (as "
+                      "fast as the host presents), skip (the title screen loses its logo)");
+
 namespace {
 
 // The engine timer object lives at a fixed guest address (sub_821BDA90).
@@ -56,6 +62,9 @@ constexpr uint32_t kGuestFrameRate = 0x827D750C;   // 1 / delta
 // Longest time one frame may advance the game clock. A streaming stall must
 // not reach physics and audio as one huge step.
 constexpr double kMaxFrameSeconds = 0.125;
+
+// Set when the frame limiter has run; see PaceUnlimitedSwap.
+std::atomic<bool> g_limiter_ran_since_swap{false};
 
 bool OriginalTiming() {
   return REXCVAR_GET(mcla_fps) < 0;
@@ -130,6 +139,7 @@ void mcla_frame_delta(PPCRegister& r8) {
     return;
   }
   WaitForFrameDeadline();
+  g_limiter_ran_since_swap.store(true, std::memory_order_relaxed);
   // r8 was computed before the wait. Whatever the wait added is picked up by
   // the next frame's measurement, so no time is lost, only shifted one frame.
   static const uint64_t max_ticks = static_cast<uint64_t>(
@@ -150,10 +160,32 @@ void mcla_fixed_step_path(PPCRegister& r3, PPCRegister& f11) {
   f11.f64 = static_cast<double>(ReadGuestFloat(r3.u32 + 0x58));
 }
 
+// Loops that never reach the engine timer (the publisher logos at start-up,
+// loading screens) were paced on the console only by the present interval of
+// two vblanks, which is removed here, so they ran as fast as the host could
+// present: the logo sequence was over in about a second. A swap that follows
+// another with no pass through the frame limiter in between is held to the
+// original 30 per second.
+
+static void PaceUnlimitedSwap() {
+  static std::atomic<uint64_t> last_swap_us{0};
+  constexpr uint64_t kPeriodMicros = 1'000'000ull / 30;
+  const bool limited = g_limiter_ran_since_swap.exchange(false, std::memory_order_relaxed) ||
+                       REXCVAR_GET(mcla_intro) != "normal";
+  const uint64_t last = last_swap_us.load(std::memory_order_relaxed);
+  uint64_t now = NowMicros();
+  if (!limited && last && now - last < kPeriodMicros) {
+    std::this_thread::sleep_for(std::chrono::microseconds(kPeriodMicros - (now - last)));
+    now = NowMicros();
+  }
+  last_swap_us.store(now, std::memory_order_relaxed);
+}
+
 bool mcla_present_interval(PPCRegister& r11) {
   if (OriginalTiming()) {
     return false;
   }
+  PaceUnlimitedSwap();
   r11.u64 = 1;
   return true;
 }
@@ -200,12 +232,16 @@ void mcla_chassis_depth_smoothing(PPCRegister& f0) {
   }
 }
 
+static bool SkipIntro() {
+  return REXCVAR_GET(mcla_skip_intro) || REXCVAR_GET(mcla_intro) == "skip";
+}
+
 bool mcla_hook_skip_intro() {
-  return REXCVAR_GET(mcla_skip_intro);
+  return SkipIntro();
 }
 
 void mcla_skip_intro_render_pass_mask(PPCRegister& r4) {
-  if (REXCVAR_GET(mcla_skip_intro)) {
+  if (SkipIntro()) {
     r4.u32 = 0xFEFFFFFFu;
   }
 }

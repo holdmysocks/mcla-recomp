@@ -74,6 +74,7 @@ extern "C" int pthread_getthreadid_np(void);
 namespace rex::arch {
 uint64_t Ps5FaultCount();
 }
+extern const char* g_mcla_settings_path;  // src/settings_menu.cpp
 namespace rex::ui::vulkan {
 uint64_t Ps5PresentCount();
 }
@@ -462,6 +463,16 @@ int main() {
   // Presentation first, as the desktop host does: the graphics system has to
   // know it will present before the runtime wires it to the guest.
   NEXT("SDL application context on the offscreen video driver");
+  // What the in-game settings menu saved. Loaded before the host's own
+  // settings below, which therefore win.
+  g_mcla_settings_path = "/data/mcla/mcla.toml";
+  try {
+    rex::cvar::LoadConfig(g_mcla_settings_path);
+    Line("settings: %s read, intro = %s", g_mcla_settings_path,
+         rex::cvar::GetFlagByName("mcla_intro").c_str());
+  } catch (const std::exception& e) {
+    Line("settings: %s not read: %s", g_mcla_settings_path, e.what());
+  }
   rex::cvar::SetFlagByName("video_driver", "offscreen");
   // The SDL input driver looks for an optional controller mapping file by a
   // relative path. In a title that lookup fails with an error other than "not

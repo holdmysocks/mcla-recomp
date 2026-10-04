@@ -35,6 +35,10 @@ REXCVAR_DEFINE_BOOL(mcla_depth_of_field, true, "MCLA", "Depth of field blur");
 REXCVAR_DEFINE_BOOL(mcla_settings_menu, true, "MCLA",
                     "Add the settings submenus to the pause menu");
 
+// Set by a host that keeps the settings file somewhere other than next to
+// the executable (PS5).
+const char* g_mcla_settings_path = nullptr;
+
 namespace {
 
 // --- Guest addresses ---------------------------------------------------------
@@ -362,6 +366,8 @@ struct ItemDef {
 constexpr double kFpsTargets[] = {30.0, 60.0, 120.0, 0.0};
 constexpr const char* kPromptValues[] = {"auto", "xbox", "playstation"};
 constexpr const char* kPromptLabels[] = {"AUTO", "XBOX", "PLAYSTATION"};
+constexpr const char* kIntroValues[] = {"normal", "fast", "skip"};
+constexpr const char* kIntroLabels[] = {"NORMAL", "FAST", "SKIP (NO LOGO)"};
 
 const ItemDef kDisplayItems[] = {
     {"PM_MxFps", ItemKind::kNumberChoice, "mcla_fps", "FPS TARGET", nullptr, nullptr, kFpsTargets,
@@ -380,7 +386,8 @@ const ItemDef kPerformanceItems[] = {
 const ItemDef kControlItems[] = {
     {"PM_MxPrompts", ItemKind::kStringChoice, "mcla_button_prompts", "BUTTON PROMPTS",
      kPromptValues, kPromptLabels, nullptr, 3},
-    {"PM_MxSkipIntro", ItemKind::kToggle, "mcla_skip_intro", "SKIP INTRO (NO LOGO)"},
+    {"PM_MxIntro", ItemKind::kStringChoice, "mcla_intro", "INTRO", kIntroValues, kIntroLabels,
+     nullptr, 3},
 };
 
 struct MenuDef {
@@ -733,8 +740,11 @@ void SaveSettingsIfChanged() {
   if (!g_settings_dirty.exchange(false, std::memory_order_relaxed)) {
     return;
   }
-  // The file the runtime loads at start: <executable folder>/mcla.toml.
-  const auto path = rex::filesystem::GetExecutableFolder() / "mcla.toml";
+  // The file the runtime loads at start: <executable folder>/mcla.toml, or
+  // the file a host without a writable executable folder names.
+  const auto path = g_mcla_settings_path
+                        ? std::filesystem::path(g_mcla_settings_path)
+                        : rex::filesystem::GetExecutableFolder() / "mcla.toml";
   rex::cvar::SaveConfig(path);
   REXLOG_INFO("settings menu: saved to {}", path.string());
 }

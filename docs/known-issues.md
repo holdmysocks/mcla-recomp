@@ -186,3 +186,11 @@ Reported by the user, reproduced with window captures: with `--mcla_skip_intro` 
 Also visible in captures: a dither pattern on foliage (palm fronds, tree shadows). LARecomp lists the same artifact as unresolved.
 
 Screenshots now use `PrintWindow`, which captures only the game window.
+
+## Intro sequence ran too fast (fixed 2026-10-04)
+
+The "intro movies" are not Bink video: they are the legal screens and the publisher logos, drawn in a loop that never calls the engine timer (sub_821BDA90), so the frame limiter there never ran. On the console that loop was paced only by the present interval of two vblanks, which `mcla_present_interval` removes; the sequence was over in about a second on PC and ran at 60-90 presents/s on PS5. Now a swap that follows another with no pass through the limiter in between is held to 30 per second (`PaceUnlimitedSwap` in `src/frame_timing.cpp`). Seen on PC by window captures (legal screens about 10 s, logos after) and on PS5 by the user.
+
+`mcla_intro` = `normal` (default), `fast` (no such hold; the title screen keeps its logo) or `skip` (the old `mcla_skip_intro`, which loses the logo); INTRO under CONTROLS in the in-game menu. On PS5 the menu's settings are saved to and read from `/data/mcla/mcla.toml` (the host's own settings are applied after and win); menu, save and load confirmed there by log and by the user.
+
+Not checked: whether the real Bink movies (`intro720.bik`, `attract720.bik`) play at the right speed. The game's player (sub_82468800) asks BinkWait (sub_827BFB58), whose clock is the kernel tick count; no Bink movie plays during start-up.
