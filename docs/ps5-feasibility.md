@@ -3,6 +3,8 @@
 Console: PS5 Pro, firmware 13.42, OnionHEN v0.0.14 (per the user), elfldr v0.26 on port 9021.
 Toolchain: ps5-payload-sdk v0.43, clang 18.1.3, built in WSL Ubuntu 24.04.
 
+> This page records the first probes, from before the port existed. They were built with a plain ps5-payload-sdk on Ubuntu; the probe sources (`ps5/probes/memprobe`, `ps5/probes/sysprobe`), `ps5/compile_probe.sh` and the Ubuntu toolchain script were removed once the port moved to the Arch Linux build in `ps5/make_ps5.sh`, and are in the git history (last present at commit `5c29e7d`). The measurements stand; to build for PS5 now, see `ps5-build-guide.md`.
+
 Only what has been run on the console is recorded as fact here.
 
 ## Probe 1: guest memory layout (`ps5/probes/memprobe`), 2026-10-03
