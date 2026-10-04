@@ -16,7 +16,7 @@ The recompiled game code and `src/` are shared with PC unchanged. What changes i
 |---|---|---|---|
 | P1 | Runtime builds for PS5 | Build log | **Done 2026-10-03.** `librexruntime.a` (22.9 MB) and `librexgpu-xenos.a` (7.7 MB) built with the runtime's own CMake: 184 steps, 0 failures. Not linked into a title yet |
 | P2 | Guest memory arena runs on the console using the runtime's own code | Title prints the arena base and passes view, alias and protection checks | Not started |
-| P3 | Fault handler works on the console | Title takes a write-watch fault through the runtime's handler and resumes | Not started |
+| P3 | Fault handler works on the console | Title takes a write-watch fault through the runtime's handler and resumes | Unprotect-and-retry passes as a payload (step 5); register-changing cases not run |
 | P4 | Runtime links for PS5 with the game code, no graphics | Link succeeds; title starts the guest entry point and logs kernel calls | Not started |
 | P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | Not started |
 | P6 | Boots to the title screen | Screenshot or user report | Not started |
@@ -43,7 +43,7 @@ All in the runtime's POSIX layer, each behind `REX_PLATFORM_PS5`:
 
 ## Known gaps, to be dealt with at the milestone named
 
-- **P3:** the fault handler reads registers through the SDK's `ucontext_t`, which is 0x30 bytes off on firmware 13.42 (probe 2). Needs a corrected context read.
+- **P3:** the machine context is 0x40 bytes into the signal context on firmware 13.42 (probe 2). The two payload SDKs declare it differently (v0.43: 0x10; mihawk-99's fork: 0x40), so `exception_handler_ps5.cpp` uses the fixed offset and not the header's. Other firmware versions unknown.
 - **P2/P3:** `QueryProtect` has no implementation without `/proc` or Mach calls, so the "previous protection" a caller asks for is reported as no-access. Callers that depend on it need checking.
 - **P2:** unnamed POSIX semaphores (`sem_init`) are used for thread suspend; untested on the console.
 - **P4:** the GPU plugin is loaded by file name; the Vulkan loader, RenderDoc and SPIRV-Tools are opened by library name. All need static equivalents.
@@ -69,4 +69,57 @@ Stubbed, not solved, at this point:
 - **No window or surface on PS5.** The window code compiles with a PS5 branch that returns no surface. Presentation through `VK_KHR_display` is milestone P5.
 - **SDL is built with no video or audio backend.** Audio and input need PS5 implementations (P7).
 - **FFmpeg uses a configuration derived from Linux.** Compiles; behaviour unverified.
-- **Thread affinity is a no-op**, thread names are write-only, and the fault handler still reads registers through the SDK's context structure (P3).
+- **Thread affinity is a no-op** and thread names are write-only.
+
+## Linking against the runtime: two things the payload SDK does not handle
+
+Found with the single-step payloads (`ps5/probes/arena`), where a payload linked with the runtime printed nothing at all while a plain one worked.
+
+1. **Large code model sections.** The runtime is compiled with the large code model, so nearly all of its code is in `.ltext.*` sections (2,337 of them in the test payload) and its data in `.lrodata`/`.ldata`/`.lbss`. The SDK's linker script (`target/lib/main.script`) names only `.text`, `.rodata`, `.data` and `.bss`. The others become orphans, and the linker put the code after `.dynamic`, in the read/write segment that is not executable. The payload died on its first call. libc++'s `__lcxx_override` section (`operator new`) has the same problem once a script is supplied.
+   Fix: link with a script derived from the SDK's that lists those sections with their normal counterparts (`ps5/probes/arena/build.sh` generates it and fails the build if any executable section is outside `.text`). **The game link (P4) needs the same script.**
+2. **Imports are checked only on the console.** The SDK's startup code resolves every import before any payload code runs and on a miss aborts with a message that goes only to the kernel log. Its stub libraries are generated lists, so a clean link proves nothing. `ps5/probes/symcheck` builds a print-only payload that looks up another payload's imports with `dlsym` on the console and prints the missing ones. For the arena payload: 0 missing of 144.
+
+A constructor with priority 101 that installs a crash reporter (signal number, fault address, instruction pointer) and writes straight to the socket is what made these visible; it is worth keeping in every console test.
+
+## Console crash on the first P2/P3 run (2026-10-03)
+
+The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.
+
+What is known:
+
+- The title was launched from the home screen and the console went down.
+- No results file exists in the title's folder afterwards. The file was created with `fopen` and flushed with `fflush` after each line, which does not survive a kernel crash; nothing was synced to disk. So the failing step is unknown.
+- The earlier probes ran the same kinds of operations in a simpler form without trouble: a 4.5 GiB shared-object reservation with two fixed views, page protection changes, and a caught-and-resumed fault. Those ran as payloads through the ELF loader; this ran as an installed title.
+
+What differs from the probes, and is therefore suspect, in no established order:
+
+| Suspect | Why |
+|---|---|
+| The runtime maps about a dozen fixed views at different offsets, not two | More, and different, `MAP_FIXED` mappings over the reservation |
+| Reserve and release paths in the memory layer | On PS5 a "reserve" with a fixed address maps anonymous memory over part of a shared view, and release unmaps part of it; decommit also calls `madvise(MADV_DONTNEED)`. None of that was in the probes |
+| The fault handler writes registers back into the signal context | Probe 2 only read the context. If the layout differs for a title compared with a payload, the write lands in the wrong place, and a corrupted context handed back to the kernel is a plausible way to take the kernel down. Fault test 1 writes back unchanged values; tests 2 and 3 write changed ones |
+| Running as a title, not a payload | Different process setup; the 0x30 context shift was measured in a payload only |
+| The Vulkan driver archive is linked whole into the title | Not initialised by the test, but its static constructors run |
+
+Rules adopted for further console runs:
+
+1. Every log line leaves the console over the network before the step it describes runs. No reliance on files on the console.
+2. One new risky operation per run, least risky first.
+3. The user is told beforehand that the run can crash the console and agrees to that run specifically.
+4. Where the same code can run as a payload through the ELF loader, do that first: its output arrives live.
+
+### Single-step payload runs (2026-10-03, after the crash)
+
+`ps5/probes/arena` builds one payload per step (`-DMCLA_STEP=N`), each printing a `NEXT ...` line to the loader socket before every operation.
+
+| Step | What it runs | Result |
+|---|---|---|
+| 0 | Startup only: constructors, `main`, exit | Pass, after the two link fixes above |
+| 5 | Runtime fault handler: write to a read-only page, handler unprotects, registers written back unchanged | Pass, 5 of 5, after the context-offset fix |
+| 6 | Handler skips the faulting instruction (changes `rip`) | Not run |
+| 7 | Handler emulates a load (changes `rip` and a register) | Not run |
+| 1–4 | `Memory::Initialize`; virtual heaps; physical heap, mirrors, protection; system heap and a 256 MiB commit | Not run |
+
+One thing this established about the crashed title: it was built with the same SDK fork, so its fault handler read and wrote the context 0x30 bytes past the right place (the first step-5 run stopped on exactly that, through a guard that refuses to write back when the instruction pointer it read is not inside the faulting function). Whether that is what took the console down is **not** established; the title's memory steps ran before its fault tests and have not been re-run.
+
+P2 is **not** verified. P3 is verified for the unprotect-and-retry case only.

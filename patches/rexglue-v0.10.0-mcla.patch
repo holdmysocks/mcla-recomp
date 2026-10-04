@@ -181,10 +181,18 @@ index 536f710..9fcc46d 100644
  
  namespace rex {
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 1ddafd0..672cf47 100644
+index 1ddafd0..a99e2e3 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
-@@ -100,6 +100,8 @@ target_include_directories(rexcore PRIVATE
+@@ -62,6 +62,7 @@ elseif(UNIX)
+         dbg_posix.cpp
+         dynlib_posix.cpp
+         exception_handler_posix.cpp
++        exception_handler_ps5.cpp
+         filesystem_posix.cpp
+         fiber_posix.cpp
+         mapped_memory_posix.cpp
+@@ -100,6 +101,8 @@ target_include_directories(rexcore PRIVATE
  
  if(APPLE)
      target_link_libraries(rexcore PRIVATE pthread)
@@ -193,7 +201,7 @@ index 1ddafd0..672cf47 100644
  elseif(UNIX)
      target_link_libraries(rexcore PRIVATE pthread rt dl)
  endif()
-@@ -133,5 +135,5 @@ endif()
+@@ -133,5 +136,5 @@ endif()
  if(REXGLUE_ENABLE_PERF_COUNTERS)
      target_sources(rexcore PRIVATE perf/counter.cpp)
      target_compile_definitions(rexcore PUBLIC
@@ -252,6 +260,204 @@ index fcfd6c9..7ac7790 100644
  
  #include <dlfcn.h>
  
+diff --git a/src/core/exception_handler_ps5.cpp b/src/core/exception_handler_ps5.cpp
+new file mode 100644
+index 0000000..5b640a1
+--- /dev/null
++++ b/src/core/exception_handler_ps5.cpp
+@@ -0,0 +1,192 @@
++/**
++ * @file        core/exception_handler_ps5.cpp
++ * @brief       Host exception (fault) handling for PlayStation 5 homebrew.
++ *
++ * The same contract as exception_handler_posix.cpp: translate a signal into a
++ * rex::arch::Exception, offer it to the installed handlers, and write any
++ * register changes back so execution resumes where the handler says.
++ *
++ * What differs is where the registers are. The kernel is FreeBSD-derived and
++ * the context has FreeBSD's mcontext fields, but on the console the machine
++ * context sits 0x30 bytes later inside the signal context than the payload
++ * SDK's ucontext_t declares. Measured on firmware 13.42 by loading marker
++ * values into registers before a deliberate fault and locating them in the
++ * context the handler received (see docs/ps5-feasibility.md, probe 2):
++ *
++ *   register   header offset   actual offset
++ *   rdi        0x18            0x48
++ *   r12        0x70            0xA0
++ *   rip        0xB0            0xE0
++ *
++ * That puts the machine context 0x40 bytes into the signal context. Payload
++ * SDKs disagree about it (ps5-payload-sdk v0.43 declares uc_mcontext at 0x10,
++ * mihawk-99's fork at 0x40), so the offset is fixed here rather than taken
++ * from whichever ucontext_t the build sees; only mcontext_t's own field
++ * layout, which both agree on, comes from the header.
++ *
++ * Whether the offset is the same on other firmware versions is not known.
++ */
++
++#include <rex/exception_handler.h>
++
++#if REX_PLATFORM_PS5
++
++#include <signal.h>
++#include <ucontext.h>
++
++#include <cstdint>
++#include <cstring>
++#include <utility>
++
++#include <rex/assert.h>
++#include <rex/math.h>
++#include <rex/platform.h>
++
++namespace rex::arch {
++
++namespace {
++
++constexpr size_t kMachineContextOffset = 0x40;
++
++// Offset of the XMM registers inside the FXSAVE-format area in mc_fpstate.
++constexpr size_t kFxsaveXmmOffset = 160;
++
++bool signal_handlers_installed_ = false;
++struct sigaction original_sigill_handler_;
++struct sigaction original_sigsegv_handler_;
++struct sigaction original_sigbus_handler_;
++
++constexpr size_t kMaxHandlerCount = 8;
++std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
++
++mcontext_t* MachineContext(void* signal_context) {
++  return reinterpret_cast<mcontext_t*>(static_cast<uint8_t*>(signal_context) +
++                                       kMachineContextOffset);
++}
++
++void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info, void* signal_context) {
++  mcontext_t* mc = MachineContext(signal_context);
++
++  HostThreadContext thread_context;
++  thread_context.rip = uint64_t(mc->mc_rip);
++  thread_context.eflags = uint32_t(mc->mc_rflags);
++  thread_context.rax = uint64_t(mc->mc_rax);
++  thread_context.rcx = uint64_t(mc->mc_rcx);
++  thread_context.rdx = uint64_t(mc->mc_rdx);
++  thread_context.rbx = uint64_t(mc->mc_rbx);
++  thread_context.rsp = uint64_t(mc->mc_rsp);
++  thread_context.rbp = uint64_t(mc->mc_rbp);
++  thread_context.rsi = uint64_t(mc->mc_rsi);
++  thread_context.rdi = uint64_t(mc->mc_rdi);
++  thread_context.r8 = uint64_t(mc->mc_r8);
++  thread_context.r9 = uint64_t(mc->mc_r9);
++  thread_context.r10 = uint64_t(mc->mc_r10);
++  thread_context.r11 = uint64_t(mc->mc_r11);
++  thread_context.r12 = uint64_t(mc->mc_r12);
++  thread_context.r13 = uint64_t(mc->mc_r13);
++  thread_context.r14 = uint64_t(mc->mc_r14);
++  thread_context.r15 = uint64_t(mc->mc_r15);
++  uint8_t* fxsave = reinterpret_cast<uint8_t*>(mc->mc_fpstate);
++  std::memcpy(thread_context.xmm_registers, fxsave + kFxsaveXmmOffset,
++              sizeof(thread_context.xmm_registers));
++
++  Exception ex;
++  switch (signal_number) {
++    case SIGILL:
++      ex.InitializeIllegalInstruction(&thread_context);
++      break;
++    case SIGBUS:
++    case SIGSEGV: {
++      // Bit 1 of the page-fault error code is set for a write.
++      constexpr uint64_t kPageFaultErrorCodeWrite = UINT64_C(1) << 1;
++      const auto operation = (uint64_t(mc->mc_err) & kPageFaultErrorCodeWrite)
++                                 ? Exception::AccessViolationOperation::kWrite
++                                 : Exception::AccessViolationOperation::kRead;
++      ex.InitializeAccessViolation(&thread_context, reinterpret_cast<uint64_t>(signal_info->si_addr),
++                                   operation);
++    } break;
++    default:
++      return;
++  }
++
++  for (size_t i = 0; i < rex::countof(handlers_) && handlers_[i].first; ++i) {
++    if (!handlers_[i].first(&ex, handlers_[i].second)) {
++      continue;
++    }
++    mc->mc_rip = __register_t(thread_context.rip);
++    mc->mc_rflags = __register_t(thread_context.eflags);
++    // In the order of X64Register.
++    __register_t* const int_registers[] = {
++        &mc->mc_rax, &mc->mc_rcx, &mc->mc_rdx, &mc->mc_rbx, &mc->mc_rsp, &mc->mc_rbp,
++        &mc->mc_rsi, &mc->mc_rdi, &mc->mc_r8,  &mc->mc_r9,  &mc->mc_r10, &mc->mc_r11,
++        &mc->mc_r12, &mc->mc_r13, &mc->mc_r14, &mc->mc_r15,
++    };
++    uint32_t index;
++    uint16_t remaining = ex.modified_int_registers();
++    while (rex::bit_scan_forward(remaining, &index)) {
++      remaining &= ~(UINT16_C(1) << index);
++      *int_registers[index] = __register_t(thread_context.int_registers[index]);
++    }
++    remaining = ex.modified_xmm_registers();
++    while (rex::bit_scan_forward(remaining, &index)) {
++      remaining &= ~(UINT16_C(1) << index);
++      std::memcpy(fxsave + kFxsaveXmmOffset + index * sizeof(vec128_t),
++                  &thread_context.xmm_registers[index], sizeof(vec128_t));
++    }
++    return;
++  }
++
++  // Nobody claimed it: put the original disposition back and return, so the
++  // fault repeats and terminates the process the usual way.
++  const struct sigaction* original = signal_number == SIGILL   ? &original_sigill_handler_
++                                     : signal_number == SIGBUS ? &original_sigbus_handler_
++                                                               : &original_sigsegv_handler_;
++  sigaction(signal_number, original, nullptr);
++}
++
++}  // namespace
++
++void ExceptionHandler::Install(Handler fn, void* data) {
++  if (!signal_handlers_installed_) {
++    struct sigaction signal_handler;
++    std::memset(&signal_handler, 0, sizeof(signal_handler));
++    signal_handler.sa_sigaction = ExceptionHandlerCallback;
++    signal_handler.sa_flags = SA_SIGINFO;
++    sigemptyset(&signal_handler.sa_mask);
++    sigaction(SIGILL, &signal_handler, &original_sigill_handler_);
++    sigaction(SIGSEGV, &signal_handler, &original_sigsegv_handler_);
++    sigaction(SIGBUS, &signal_handler, &original_sigbus_handler_);
++    signal_handlers_installed_ = true;
++  }
++  for (size_t i = 0; i < rex::countof(handlers_); ++i) {
++    if (!handlers_[i].first) {
++      handlers_[i].first = fn;
++      handlers_[i].second = data;
++      return;
++    }
++  }
++  assert_always("Too many exception handlers installed");
++}
++
++void ExceptionHandler::Uninstall(Handler fn, void* data) {
++  for (size_t i = 0; i < rex::countof(handlers_); ++i) {
++    if (handlers_[i].first == fn && handlers_[i].second == data) {
++      for (; i < rex::countof(handlers_) - 1; ++i) {
++        handlers_[i] = handlers_[i + 1];
++      }
++      handlers_[i].first = nullptr;
++      handlers_[i].second = nullptr;
++      break;
++    }
++  }
++  if (!handlers_[0].first && signal_handlers_installed_) {
++    sigaction(SIGILL, &original_sigill_handler_, nullptr);
++    sigaction(SIGSEGV, &original_sigsegv_handler_, nullptr);
++    sigaction(SIGBUS, &original_sigbus_handler_, nullptr);
++    signal_handlers_installed_ = false;
++  }
++}
++
++}  // namespace rex::arch
++
++#endif  // REX_PLATFORM_PS5
 diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
 index ef5bdf4..540fc57 100644
 --- a/src/core/filesystem_posix.cpp
@@ -278,6 +484,20 @@ index 8ee8e34..74bdb2c 100644
  using rex_stat64_t = struct stat;
  using rex_off64_t = off_t;
  #define rex_fstat64 fstat
+diff --git a/src/core/math_gcc.cpp b/src/core/math_gcc.cpp
+index 1ec7192..f4f06ef 100644
+--- a/src/core/math_gcc.cpp
++++ b/src/core/math_gcc.cpp
+@@ -34,7 +34,8 @@ uint8_t tzcnt(uint64_t v) {
+ }
+ 
+ bool bit_scan_forward(uint32_t v, uint32_t* out_first_set_index) {
+-  int i = ffs(v);
++  // __builtin_ffs rather than ffs(): the PS5 payload SDK's libc has no ffs.
++  int i = __builtin_ffs(static_cast<int>(v));
+   *out_first_set_index = i - 1;
+   return i != 0;
+ }
 diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
 index b52bf39..fa76f85 100644
 --- a/src/core/memory_posix.cpp
