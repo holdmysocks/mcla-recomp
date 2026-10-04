@@ -482,21 +482,33 @@ int main() {
 #define MCLA_STRINGIZE(x) MCLA_STRINGIZE_(x)
   rex::cvar::SetFlagByName("physical_watch_granularity", MCLA_STRINGIZE(MCLA_WATCH_GRANULARITY));
   // And make re-watching as coarse as invalidation already is: requests for
-  // guest memory are widened to 256 KiB chunks, so a fault is followed by one
+  // guest memory are widened to 64 KiB chunks, so a fault is followed by one
   // protection change and not one per draw that uses the area.
 #ifndef MCLA_REQUEST_GRANULARITY_LOG2
-#define MCLA_REQUEST_GRANULARITY_LOG2 18
+#define MCLA_REQUEST_GRANULARITY_LOG2 16
 #endif
   rex::cvar::SetFlagByName("shared_memory_request_granularity_log2",
                            MCLA_STRINGIZE(MCLA_REQUEST_GRANULARITY_LOG2));
   // Memory the game rewrites every frame (dynamic vertex data) is not worth
   // watching at all here: after a few write faults in a second a page is hot
-  // for two seconds, not watched and simply uploaded when a draw uses it. The
+  // for ten seconds, not watched and simply uploaded when a draw uses it. The
   // watch unit is the host page again so that a hot page is exactly that.
 #ifndef MCLA_HOT_PAGE_FAULTS
 #define MCLA_HOT_PAGE_FAULTS 4
 #endif
   rex::cvar::SetFlagByName("shared_memory_hot_page_faults", MCLA_STRINGIZE(MCLA_HOT_PAGE_FAULTS));
+  // From the tuning runs (docs/ps5-port-plan.md): a hot page has to fault its
+  // way back to hot each time its period ends, so the period is long; a write
+  // fault invalidates 16 pages around it (256 KiB, what 64 pages are on a PC).
+  rex::cvar::SetFlagByName("shared_memory_hot_page_ms", "10000");
+  rex::cvar::SetFlagByName("shared_memory_invalidation_pages_log2", "4");
+  // The runtime by default forgets at the end of every frame which pages are
+  // already in the GPU buffer, and copies all that are in use again: over
+  // 1 GiB/s here, against about 80 MiB/s with the write watches trusted.
+#ifndef MCLA_CLEAR_PAGE_STATE
+#define MCLA_CLEAR_PAGE_STATE false
+#endif
+  rex::cvar::SetFlagByName("clear_memory_page_state", MCLA_STRINGIZE(MCLA_CLEAR_PAGE_STATE));
   rex::ui::SDLWindowedAppContext app_context;
   if (!app_context.Initialize()) {
     return Finish("the SDL application context did not initialise", 9);

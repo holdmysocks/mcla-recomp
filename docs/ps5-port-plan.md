@@ -229,6 +229,8 @@ Findings, in game, driving:
 - 700-2,100 MiB/s of the copying was pages uploaded again with nothing having invalidated them. Cause: the SDK's `clear_memory_page_state` (default on) drops the valid state of every CPU-uploaded page at the end of each frame. Whether the game needs it is the next test (the tuning cycle alternates it).
 - With by-the-byte hot pages and the cheaper request path the run held 28-30 presents/s for most of its length, including the stretch with the old hot-page behaviour, so the scene may have been lighter; not yet a confirmed gain.
 
+Run 4 alternated `clear_memory_page_state`: on, 580-1,380 MiB/s copied and 18-30 presents/s; off, 56-98 MiB/s and 26-30 (presents top out at 30). The user saw no visual faults in a 445 s run. The host now sets it off (`MCLA_CLEAR_PAGE_STATE=true` at build time restores it), with 64 KiB request chunks, 16 pages invalidated per write fault and a 10 s hot period.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

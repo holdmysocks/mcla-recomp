@@ -116,10 +116,12 @@ for stage in "${stages[@]}"; do
     # A 20 s sampling profile starting this many seconds into the run
     # (ps5/profile_report.py reads it from the title log).
     [ -z "${MCLA_PROFILE_AT:-}" ] || extra="$extra -DMCLA_PROFILE_AT=$MCLA_PROFILE_AT"
-    # Tuning of the write-tracking units (see main_ps5.cpp); defaults 65536 and 18.
+    # Tuning of the write-tracking units (see main_ps5.cpp); defaults 0 and 16.
     [ -z "${MCLA_WATCH_GRANULARITY:-}" ] || extra="$extra -DMCLA_WATCH_GRANULARITY=$MCLA_WATCH_GRANULARITY"
     [ -z "${MCLA_REQUEST_GRANULARITY_LOG2:-}" ] || extra="$extra -DMCLA_REQUEST_GRANULARITY_LOG2=$MCLA_REQUEST_GRANULARITY_LOG2"
     [ -z "${MCLA_HOT_PAGE_FAULTS:-}" ] || extra="$extra -DMCLA_HOT_PAGE_FAULTS=$MCLA_HOT_PAGE_FAULTS"
+    # MCLA_CLEAR_PAGE_STATE=true restores the runtime's per-frame re-copy of all pages in use.
+    [ -z "${MCLA_CLEAR_PAGE_STATE:-}" ] || extra="$extra -DMCLA_CLEAR_PAGE_STATE=$MCLA_CLEAR_PAGE_STATE"
     # A tuning run: cycle through setting combinations every 30 s from this second.
     [ -z "${MCLA_TUNE_FROM:-}" ] || extra="$extra -DMCLA_TUNE_FROM=$MCLA_TUNE_FROM"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
