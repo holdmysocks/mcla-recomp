@@ -52,6 +52,26 @@ index d876846..500ee36 100644
  template <class, class>
  struct clock_time_conversion {};
  
+diff --git a/include/rex/memory/utils.h b/include/rex/memory/utils.h
+index 8ccb52c..cea0a2f 100644
+--- a/include/rex/memory/utils.h
++++ b/include/rex/memory/utils.h
+@@ -152,6 +152,15 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+                   size_t file_offset);
+ bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length);
+ 
++#if REX_PLATFORM_PS5
++// Reserve an address range that views of the mapping will be placed in with
++// MapFileView, at an address of the kernel's choosing. How the reservation is
++// made depends on what backs the mapping (a shared object, or direct memory in
++// an installed title). Returns nullptr on failure.
++void* ReserveFileMappingRange(FileMappingHandle handle, size_t length);
++bool ReleaseFileMappingRange(FileMappingHandle handle, void* base_address, size_t length);
++#endif
++
+ inline size_t hash_combine(size_t seed) {
+   return seed;
+ }
 diff --git a/include/rex/platform.h b/include/rex/platform.h
 index e90418d..5f0afef 100644
 --- a/include/rex/platform.h
@@ -580,7 +600,7 @@ index 1ec7192..f4f06ef 100644
    return i != 0;
  }
 diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
-index b52bf39..fa76f85 100644
+index b52bf39..4745081 100644
 --- a/src/core/memory_posix.cpp
 +++ b/src/core/memory_posix.cpp
 @@ -37,7 +37,7 @@
@@ -592,7 +612,54 @@ index b52bf39..fa76f85 100644
  #define rex_mmap64 mmap
  #define rex_ftruncate64 ftruncate
  #else
-@@ -262,7 +262,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+@@ -57,9 +57,46 @@
+ // #include "xenia/base/main_android.h"
+ #endif
+ 
++#if REX_PLATFORM_PS5
++// The console's direct memory: physical allocations a title maps itself, at
++// any number of addresses. Weak, so that a build whose kernel library does not
++// export them still links and simply has no fallback.
++extern "C" {
++int32_t sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end, size_t length,
++                                      size_t alignment, int memory_type, int64_t* physical_start)
++    __attribute__((weak));
++int32_t sceKernelReleaseDirectMemory(int64_t start, size_t length) __attribute__((weak));
++int32_t sceKernelMapDirectMemory(void** address, size_t length, int protection, int flags,
++                                 int64_t direct_start, size_t alignment) __attribute__((weak));
++int64_t sceKernelGetDirectMemorySize(void) __attribute__((weak));
++int32_t sceKernelReserveVirtualRange(void** address, size_t length, int flags, size_t alignment)
++    __attribute__((weak));
++int32_t sceKernelMunmap(void* address, size_t length) __attribute__((weak));
++}
++#endif
++
+ namespace rex {
+ namespace memory {
+ 
++#if REX_PLATFORM_PS5
++namespace {
++// Not a file descriptor: the handle of the one direct-memory backed mapping.
++constexpr FileMappingHandle kDirectMemoryHandle = 0x44495243;
++constexpr int kDirectTypeCpu = 12;
++constexpr int kDirectMapFixed = 0x10;
++constexpr size_t kDirectUnit = 0x10000;
++constexpr size_t kDirectAlignment = 0x200000;
++int64_t g_direct_start = -1;
++size_t g_direct_length = 0;
++
++bool DirectMemoryAvailable() {
++  return &sceKernelAllocateDirectMemory && &sceKernelReleaseDirectMemory &&
++         &sceKernelMapDirectMemory && &sceKernelGetDirectMemorySize &&
++         &sceKernelReserveVirtualRange && &sceKernelMunmap;
++}
++}  // namespace
++#endif
++
+ // Convert a filesystem path to a valid shm_open name (must start with /, no other slashes).
+ // macOS enforces a 31-character total limit, so long names are folded from the full path rather
+ // than only the filename. This keeps equal filenames in different directories distinct.
+@@ -262,7 +299,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
      // range uses mprotect to avoid clobbering the existing reservation. Do not
      // widen sub-host-page requests here - higher-level guest heaps must reconcile
      // all guest permissions sharing a host page first.
@@ -601,7 +668,7 @@ index b52bf39..fa76f85 100644
    if (base_address != nullptr && allocation_type == AllocationType::kCommit) {
      const size_t host_page = page_size();
      const uintptr_t address = reinterpret_cast<uintptr_t>(base_address);
-@@ -284,7 +284,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+@@ -284,7 +321,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
    if (base_address) {
      flags |= MAP_FIXED;
    }
@@ -610,26 +677,45 @@ index b52bf39..fa76f85 100644
    if (base_address) {
      flags |= MAP_FIXED_NOREPLACE;
    }
-@@ -473,6 +473,18 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+@@ -473,6 +510,37 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
        return kFileMappingHandleInvalid;
    }
    oflag |= O_CREAT;
 +#if REX_PLATFORM_PS5
 +  (void)path;
 +  int ret = shm_open(SHM_ANON, oflag, 0600);
-+  if (ret < 0) {
-+    return kFileMappingHandleInvalid;
-+  }
-+  if (rex_ftruncate64(ret, static_cast<off_t>(length)) != 0) {
++  if (ret >= 0) {
++    if (rex_ftruncate64(ret, static_cast<off_t>(length)) == 0) {
++      return static_cast<FileMappingHandle>(ret);
++    }
 +    close(ret);
-+    return kFileMappingHandleInvalid;
 +  }
-+  return static_cast<FileMappingHandle>(ret);
++  // An installed title cannot size a shared object beyond its flexible memory
++  // budget (ENOMEM at ftruncate; 448 MiB configured on firmware 13.42). Its
++  // large memory is direct memory, which can also be mapped at any number of
++  // addresses. One arena per process, so one direct allocation.
++  if (DirectMemoryAvailable() && g_direct_start < 0) {
++    const size_t direct_length = rex::round_up(length, kDirectAlignment);
++    int64_t start = -1;
++    const int32_t result =
++        sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), direct_length,
++                                      kDirectAlignment, kDirectTypeCpu, &start);
++    if (result == 0) {
++      g_direct_start = start;
++      g_direct_length = direct_length;
++      REXSYS_INFO("File mapping backed by direct memory: 0x{:X} bytes at direct offset 0x{:X}",
++                  direct_length, static_cast<uint64_t>(start));
++      return kDirectMemoryHandle;
++    }
++    REXSYS_ERROR("sceKernelAllocateDirectMemory(0x{:X}) failed: 0x{:08X}", direct_length,
++                 static_cast<uint32_t>(result));
++  }
++  return kFileMappingHandleInvalid;
 +#else
    auto full_path = MakeShmName(path);
    int ret = shm_open(full_path.c_str(), oflag, 0777);
    if (ret < 0) {
-@@ -484,12 +496,13 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+@@ -484,12 +552,24 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
      return kFileMappingHandleInvalid;
    }
    return static_cast<FileMappingHandle>(ret);
@@ -638,12 +724,90 @@ index b52bf39..fa76f85 100644
  }
  
  void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++#if REX_PLATFORM_PS5
++  if (handle == kDirectMemoryHandle) {
++    (void)path;
++    if (g_direct_start >= 0) {
++      sceKernelReleaseDirectMemory(g_direct_start, g_direct_length);
++      g_direct_start = -1;
++      g_direct_length = 0;
++    }
++    return;
++  }
++#endif
    close(static_cast<int>(handle));
 -#if !REX_PLATFORM_ANDROID
 +#if !REX_PLATFORM_ANDROID && !REX_PLATFORM_PS5
    auto full_path = MakeShmName(path);
    shm_unlink(full_path.c_str());
  #endif
+@@ -513,6 +593,25 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+   }
+ 
+   uint32_t prot = ToPosixProtectFlags(access);
++#if REX_PLATFORM_PS5
++  if (handle == kDirectMemoryHandle) {
++    if (g_direct_start < 0 || file_offset + length > g_direct_length) {
++      return nullptr;
++    }
++    // The CPU protection bits are PROT_READ/WRITE/EXEC's values.
++    void* address = base_address;
++    const int32_t status =
++        sceKernelMapDirectMemory(&address, length, static_cast<int>(prot),
++                                 base_address ? kDirectMapFixed : 0,
++                                 g_direct_start + static_cast<int64_t>(file_offset), page);
++    if (status != 0 || (base_address && address != base_address)) {
++      REXSYS_ERROR("sceKernelMapDirectMemory({}, 0x{:X}, offset 0x{:X}) failed: 0x{:08X}",
++                   base_address, length, file_offset, static_cast<uint32_t>(status));
++      return nullptr;
++    }
++    return address;
++  }
++#endif
+   void* result = rex_mmap64(base_address, length, prot, flags, static_cast<int>(handle),
+                             static_cast<off_t>(file_offset));
+   if (result == MAP_FAILED) {
+@@ -529,8 +628,40 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+ }
+ 
+ bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length) {
++#if REX_PLATFORM_PS5
++  if (handle == kDirectMemoryHandle) {
++    return sceKernelMunmap(base_address, length) == 0;
++  }
++#endif
++  return munmap(base_address, length) == 0;
++}
++
++#if REX_PLATFORM_PS5
++void* ReserveFileMappingRange(FileMappingHandle handle, size_t length) {
++  if (handle == kDirectMemoryHandle) {
++    void* address = nullptr;
++    const int32_t status = sceKernelReserveVirtualRange(&address, length, 0, kDirectUnit);
++    if (status != 0) {
++      REXSYS_ERROR("sceKernelReserveVirtualRange(0x{:X}) failed: 0x{:08X}", length,
++                   static_cast<uint32_t>(status));
++      return nullptr;
++    }
++    return address;
++  }
++  // The kernel refuses an anonymous reservation this large (ENOMEM above about
++  // 2 GiB, measured on firmware 13.42), but maps the shared object itself
++  // without committing it.
++  void* result = mmap(nullptr, length, PROT_NONE, MAP_SHARED, static_cast<int>(handle), 0);
++  return result == MAP_FAILED ? nullptr : result;
++}
++
++bool ReleaseFileMappingRange(FileMappingHandle handle, void* base_address, size_t length) {
++  if (handle == kDirectMemoryHandle) {
++    return sceKernelMunmap(base_address, length) == 0;
++  }
+   return munmap(base_address, length) == 0;
+ }
++#endif
+ 
+ }  // namespace memory
+ }  // namespace rex
 diff --git a/src/core/perf/counter.cpp b/src/core/perf/counter.cpp
 index 536009e..09de75c 100644
 --- a/src/core/perf/counter.cpp
@@ -935,7 +1099,7 @@ index fc46d86..5f57565 100644
  
  if(WIN32)
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
-index 76cc877..8a8f975 100644
+index 76cc877..48024c5 100644
 --- a/src/system/xmemory.cpp
 +++ b/src/system/xmemory.cpp
 @@ -20,6 +20,11 @@
@@ -970,24 +1134,54 @@ index 76cc877..8a8f975 100644
  int Memory::MapViewsMac() {
    assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
  
-@@ -323,7 +328,16 @@ int Memory::MapViewsMac() {
+@@ -323,7 +328,18 @@ int Memory::MapViewsMac() {
        static_cast<size_t>(map_info[rex::countof(map_info) - 1].virtual_address_end -
                            map_info[0].virtual_address_start + 1);
  
 +#if REX_PLATFORM_PS5
-+  // The kernel refuses an anonymous reservation this large (ENOMEM above about
-+  // 2 GiB, measured on firmware 13.42), but maps the shared object itself
-+  // without committing it. The base must also be the kernel's choice: the
-+  // executable is loaded at 0x200000000, inside the range the other
-+  // platforms probe for.
-+  void* reserved_base = mmap(nullptr, total_size, PROT_NONE, MAP_SHARED, mapping_, 0);
++  // The reservation depends on what backs the mapping (a shared object in a
++  // payload, direct memory in a title), so the memory layer makes it. The base
++  // must be the kernel's choice either way: a payload is loaded at
++  // 0x200000000, inside the range the other platforms probe for.
++  void* reserved_base = rex::memory::ReserveFileMappingRange(mapping_, total_size);
++  if (!reserved_base) {
++    reserved_base = MAP_FAILED;
++  }
 +#else
    void* reserved_base = mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 +#endif
    if (reserved_base == MAP_FAILED) {
      REXSYS_ERROR("MapViewsMac: reserve failed: {}", std::strerror(errno));
      return 1;
-@@ -356,7 +370,7 @@ int Memory::MapViewsMac() {
+@@ -337,15 +353,27 @@ int Memory::MapViewsMac() {
+                                            map_info[n].virtual_address_start + 1);
+     size_t file_offset = static_cast<size_t>(map_info[n].target_address & granularity_mask);
+     void* target_address = mapping_base + map_info[n].virtual_address_start;
++#if REX_PLATFORM_PS5
++    void* result = rex::memory::MapFileView(mapping_, target_address, view_size,
++                                            rex::memory::PageAccess::kReadWrite, file_offset);
++    if (!result) {
++      result = MAP_FAILED;
++    }
++#else
+     void* result = mmap(target_address, view_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                         mapping_, file_offset);
++#endif
+     if (result == MAP_FAILED || result != target_address) {
+       int err = errno;
+       REXSYS_ERROR(
+           "MapViewsMac: map failed view {} addr 0x{:016X} size 0x{:X} offset 0x{:X} err {} ({})", n,
+           reinterpret_cast<uintptr_t>(target_address), view_size, file_offset, err,
+           std::strerror(err));
++#if REX_PLATFORM_PS5
++      rex::memory::ReleaseFileMappingRange(mapping_, reserved_base, total_size);
++#else
+       munmap(reserved_base, total_size);
++#endif
+       for (auto& view : views_.all_views) {
+         view = nullptr;
+       }
+@@ -356,7 +384,7 @@ int Memory::MapViewsMac() {
  
    return 0;
  }

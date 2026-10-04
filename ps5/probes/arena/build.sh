@@ -22,6 +22,7 @@ work=/root/ps5vk/mcla-arena
 mkdir -p "$work"
 tr -d '\r' < "$here/main.cpp" > "$work/main.cpp"
 tr -d '\r' < "$here/../../title_log.h" > "$work/title_log.h"
+tr -d '\r' < "$here/../../log_fd_sink.h" > "$work/log_fd_sink.h"
 
 # Compile with exactly the flags the runtime's own sources were built with.
 ninja -C "$runtime_build" -t commands rexruntime > "$work/commands.txt"

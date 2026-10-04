@@ -22,6 +22,19 @@
 //   8  steps 5, 6 and 7 in one run
 //   9  steps 1 to 4 in one run
 //
+//  10  no runtime memory code. The arena's raw system calls one at a time,
+//      each reported with its error code, for three ways of getting memory
+//      that can be mapped more than once: shm_open(SHM_ANON), a named
+//      shm_open, and memfd_create. Written after step 9 failed as a title
+//      without saying why
+//
+//  11  title only, no runtime memory code. Step 10 showed that a title cannot
+//      size a shared-memory object to the arena's 4.5 GiB (ENOMEM at
+//      ftruncate). This asks what a title can do instead: how large a shared
+//      object it may have, and whether the console's direct memory can stand
+//      in for it (reserve the range, map one allocation at two addresses,
+//      change protection, and finally allocate and map the full size)
+//
 // 8 and 9 are for re-running as a title what has already passed step by step
 // as a payload.
 //
@@ -41,7 +54,7 @@
 #include <rex/system/xmemory.h>
 
 #ifndef MCLA_STEP
-#error "build with -DMCLA_STEP=0..9"
+#error "build with -DMCLA_STEP=0..11"
 #endif
 
 #include <signal.h>
@@ -50,6 +63,13 @@
 // As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC;
 // as a payload this does nothing and standard output is the loader socket.
 #include "title_log.h"
+#include "log_fd_sink.h"
+
+#include <fcntl.h>
+#include <cerrno>
+#include <memory>
+
+#include <rex/logging.h>
 
 // --- Early crash reporter -------------------------------------------------------
 //
@@ -97,7 +117,7 @@ void EarlyCrash(int signal_number, siginfo_t* info, void* context) {
   const uint64_t* stack = reinterpret_cast<const uint64_t*>(actual->mc_rsp);
   const uint64_t anchor = reinterpret_cast<uint64_t>(&EarlyAnchor);
   int printed = 0;
-  for (int i = 0; i < 512 && printed < 12; ++i) {
+  for (int i = 0; i < 2048 && printed < 24; ++i) {
     const uint64_t word = stack[i];
     // A title is loaded at 0x400000, below the range: do not let the lower bound wrap.
     const uint64_t low = anchor > 0x4000000 ? anchor - 0x4000000 : 0x1000;
@@ -422,12 +442,277 @@ bool FaultHandler(rex::arch::Exception* ex, void*) {
   munmap(g_fault.page, g_fault.page_size);
 }
 
+// --- Step 10: the arena's raw calls, with error codes ----------------------------
+
+#if MCLA_STEP == 10
+
+extern "C" int memfd_create(const char* name, unsigned int flags);
+
+// What Memory::Initialize does with its backing object, reduced to the system
+// calls: size it, reserve the whole range with no access, put a fixed view at
+// the start, put a second view of the same offset elsewhere in the range, and
+// see that a write through one is read through the other.
+void TryBacking(const char* what, int descriptor) {
+  char text[160];
+  const size_t total = 0x120010000ull;
+  const size_t view = 0x10000;
+  std::snprintf(text, sizeof text, "%s: descriptor", what);
+  Check(descriptor >= 0, text);
+  if (descriptor < 0) {
+    Line("  errno %d (%s)", errno, std::strerror(errno));
+    return;
+  }
+
+  NEXT("%s: ftruncate to 0x%zx", what, total);
+  int result = ftruncate(descriptor, static_cast<off_t>(total));
+  std::snprintf(text, sizeof text, "%s: ftruncate", what);
+  Check(result == 0, text);
+  if (result != 0) {
+    Line("  errno %d (%s)", errno, std::strerror(errno));
+    close(descriptor);
+    return;
+  }
+
+  NEXT("%s: mmap the whole range PROT_NONE, MAP_SHARED, kernel-chosen address", what);
+  void* base = mmap(nullptr, total, PROT_NONE, MAP_SHARED, descriptor, 0);
+  std::snprintf(text, sizeof text, "%s: reservation", what);
+  Check(base != MAP_FAILED, text);
+  if (base == MAP_FAILED) {
+    Line("  errno %d (%s)", errno, std::strerror(errno));
+    close(descriptor);
+    return;
+  }
+  Line("  base %p", base);
+  auto* bytes = static_cast<uint8_t*>(base);
+
+  NEXT("%s: fixed read-write view of offset 0 at the base", what);
+  void* first = mmap(bytes, view, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, descriptor, 0);
+  std::snprintf(text, sizeof text, "%s: first fixed view", what);
+  Check(first == bytes, text);
+  if (first != bytes) Line("  errno %d (%s)", errno, std::strerror(errno));
+
+  NEXT("%s: second fixed view of offset 0, 4 GiB further on", what);
+  uint8_t* alias_address = bytes + 0x100000000ull;
+  void* second =
+      mmap(alias_address, view, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, descriptor, 0);
+  std::snprintf(text, sizeof text, "%s: second fixed view", what);
+  Check(second == alias_address, text);
+  if (second != alias_address) Line("  errno %d (%s)", errno, std::strerror(errno));
+
+  if (first == bytes && second == alias_address) {
+    NEXT("%s: write through the first view, read through the second", what);
+    bytes[0x123] = 0x5A;
+    std::snprintf(text, sizeof text, "%s: the two views are the same memory", what);
+    Check(alias_address[0x123] == 0x5A, text);
+
+    NEXT("%s: mprotect the first view read-only and back", what);
+    const bool protect_ok = mprotect(bytes, view, PROT_READ) == 0 &&
+                            mprotect(bytes, view, PROT_READ | PROT_WRITE) == 0;
+    std::snprintf(text, sizeof text, "%s: mprotect on a view", what);
+    Check(protect_ok, text);
+    if (!protect_ok) Line("  errno %d (%s)", errno, std::strerror(errno));
+  }
+
+  NEXT("%s: munmap the range and close", what);
+  result = munmap(base, total);
+  std::snprintf(text, sizeof text, "%s: munmap", what);
+  Check(result == 0, text);
+  close(descriptor);
+}
+
+void TestRawArenaCalls() {
+  NEXT("shm_open(SHM_ANON, O_RDWR | O_CREAT, 0600)");
+  TryBacking("anonymous shm", shm_open(SHM_ANON, O_RDWR | O_CREAT, 0600));
+
+  NEXT("shm_open(\"/mcla_arena_probe\", O_RDWR | O_CREAT, 0600)");
+  const int named = shm_open("/mcla_arena_probe", O_RDWR | O_CREAT, 0600);
+  TryBacking("named shm", named);
+  if (named >= 0) shm_unlink("/mcla_arena_probe");
+
+#ifdef MCLA_TITLE
+  // Only the title link has it (the driver's platform layer).
+  NEXT("memfd_create(\"mcla_arena_probe\", 0)");
+  TryBacking("memfd", memfd_create("mcla_arena_probe", 0));
+#endif
+}
+
+#endif  // MCLA_STEP == 10
+
+// --- Step 11: direct memory as the arena's backing, in a title ---------------------
+
+#if MCLA_STEP == 11
+#ifndef MCLA_TITLE
+#error "step 11 is for a title (TITLE=<id>): direct memory is a title's memory"
+#endif
+
+extern "C" {
+int32_t sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end, size_t length,
+                                      size_t alignment, int memory_type, int64_t* physical_start);
+int32_t sceKernelReleaseDirectMemory(int64_t start, size_t length);
+int32_t sceKernelMapDirectMemory(void** address, size_t length, int protection, int flags,
+                                 int64_t direct_start, size_t alignment);
+int64_t sceKernelGetDirectMemorySize(void);
+int32_t sceKernelAvailableDirectMemorySize(int64_t search_start, int64_t search_end,
+                                           size_t alignment, int64_t* physical_start,
+                                           size_t* available);
+int32_t sceKernelMprotect(const void* address, size_t length, int protection);
+int32_t sceKernelReserveVirtualRange(void** address, size_t length, int flags, size_t alignment);
+int32_t sceKernelMunmap(void* address, size_t length);
+int32_t sceKernelAvailableFlexibleMemorySize(size_t* available);
+int32_t sceKernelConfiguredFlexibleMemorySize(size_t* configured);
+}
+
+constexpr int kDirectTypeCpu = 12;  // the type the driver's platform layer uses for CPU memory
+constexpr int kMapFixed = 0x10;
+constexpr int kProtRead = 1;
+constexpr int kProtReadWrite = 3;
+
+void Result(const char* what, int32_t result) {
+  char text[200];
+  std::snprintf(text, sizeof text, "%s (returned 0x%08X)", what, static_cast<unsigned>(result));
+  Check(result == 0, text);
+}
+
+void TestDirectMemory() {
+  const size_t total = 0x120010000ull;
+  const size_t unit = 0x10000;
+
+  NEXT("query direct and flexible memory sizes");
+  const int64_t direct_total = sceKernelGetDirectMemorySize();
+  int64_t largest_start = 0;
+  size_t largest = 0;
+  const int32_t available_result =
+      sceKernelAvailableDirectMemorySize(0, direct_total, unit, &largest_start, &largest);
+  size_t flexible_available = 0, flexible_configured = 0;
+  sceKernelAvailableFlexibleMemorySize(&flexible_available);
+  sceKernelConfiguredFlexibleMemorySize(&flexible_configured);
+  Line("direct memory: total %lld MiB; largest free range %zu MiB at 0x%llx (query returned 0x%08X)",
+       static_cast<long long>(direct_total >> 20), largest >> 20,
+       static_cast<unsigned long long>(largest_start), static_cast<unsigned>(available_result));
+  Line("flexible memory: %zu MiB available of %zu MiB configured", flexible_available >> 20,
+       flexible_configured >> 20);
+
+  for (size_t megabytes : {64u, 256u, 1024u, 2048u}) {
+    NEXT("shared object sized to %zu MiB", megabytes);
+    const int descriptor = shm_open(SHM_ANON, O_RDWR | O_CREAT, 0600);
+    if (descriptor < 0) {
+      Line("  shm_open failed, errno %d", errno);
+      break;
+    }
+    const int result = ftruncate(descriptor, static_cast<off_t>(megabytes << 20));
+    Line("  ftruncate %s%s", result == 0 ? "succeeded" : "failed: ",
+         result == 0 ? "" : std::strerror(errno));
+    close(descriptor);
+    if (result != 0) break;
+  }
+
+  NEXT("sceKernelReserveVirtualRange: 0x%zx bytes, kernel-chosen address", total);
+  void* reserved = nullptr;
+  int32_t result = sceKernelReserveVirtualRange(&reserved, total, 0, unit);
+  Result("reserve the arena's address range", result);
+  if (result != 0) return;
+  Line("  reserved at %p", reserved);
+  auto* base = static_cast<uint8_t*>(reserved);
+
+  NEXT("allocate 64 KiB of direct memory");
+  int64_t small_start = -1;
+  result = sceKernelAllocateDirectMemory(0, direct_total, unit, unit, kDirectTypeCpu, &small_start);
+  Result("allocate 64 KiB of direct memory", result);
+  if (result == 0) {
+    NEXT("map it read-write at the start of the reserved range");
+    void* first = base;
+    result = sceKernelMapDirectMemory(&first, unit, kProtReadWrite, kMapFixed, small_start, unit);
+    Result("first fixed view", result);
+    const bool first_ok = result == 0 && first == base;
+
+    NEXT("map the same direct memory again, 4 GiB further on");
+    void* second = base + 0x100000000ull;
+    result = sceKernelMapDirectMemory(&second, unit, kProtReadWrite, kMapFixed, small_start, unit);
+    Result("second fixed view of the same memory", result);
+    const bool second_ok = result == 0 && second == base + 0x100000000ull;
+
+    if (first_ok && second_ok) {
+      NEXT("write through the first view, read through the second");
+      base[0x123] = 0x5A;
+      Check(base[0x100000123ull] == 0x5A, "the two views are the same memory");
+
+      NEXT("sceKernelMprotect the first view read-only, then read-write");
+      result = sceKernelMprotect(base, unit, kProtRead);
+      Result("sceKernelMprotect to read-only", result);
+      result = sceKernelMprotect(base, unit, kProtReadWrite);
+      Result("sceKernelMprotect back to read-write", result);
+
+      NEXT("plain mprotect on the first view: read-only, none, read-write");
+      const int ro = mprotect(base, unit, PROT_READ);
+      const int ro_errno = errno;
+      const int none = mprotect(base, unit, PROT_NONE);
+      const int none_errno = errno;
+      const int rw = mprotect(base, unit, PROT_READ | PROT_WRITE);
+      const int rw_errno = errno;
+      Line("  mprotect: read-only %d (errno %d), none %d (errno %d), read-write %d (errno %d)", ro,
+           ro ? ro_errno : 0, none, none ? none_errno : 0, rw, rw ? rw_errno : 0);
+      Check(ro == 0 && none == 0 && rw == 0, "plain mprotect works on a direct-memory view");
+      base[0x124] = 0x33;
+      Check(base[0x100000124ull] == 0x33, "still the same memory after the protection changes");
+    }
+
+    NEXT("map the same direct memory a third time with no access");
+    void* third = base + 0x20000;
+    result = sceKernelMapDirectMemory(&third, unit, 0, kMapFixed, small_start, unit);
+    Line("  mapping with protection 0 returned 0x%08X", static_cast<unsigned>(result));
+    if (result == 0) sceKernelMunmap(third, unit);
+
+    NEXT("unmap the views and release the 64 KiB");
+    if (first_ok) sceKernelMunmap(base, unit);
+    if (second_ok) sceKernelMunmap(base + 0x100000000ull, unit);
+    Result("release the 64 KiB", sceKernelReleaseDirectMemory(small_start, unit));
+  }
+
+  // Last, because it is the largest request: everything above has been
+  // reported by the time this runs.
+  const size_t full = 0x120000000ull;
+  NEXT("allocate the full 0x%zx bytes (4.5 GiB) of direct memory in one piece", full);
+  int64_t full_start = -1;
+  result = sceKernelAllocateDirectMemory(0, direct_total, full, 0x200000, kDirectTypeCpu, &full_start);
+  Result("allocate 4.5 GiB of direct memory", result);
+  if (result == 0) {
+    Line("  at direct offset 0x%llx", static_cast<unsigned long long>(full_start));
+    NEXT("release the reservation, then map all 4.5 GiB read-write at the same address");
+    sceKernelMunmap(base, total);
+    void* whole = base;
+    result = sceKernelMapDirectMemory(&whole, full, kProtReadWrite, kMapFixed, full_start, 0x200000);
+    Result("map 4.5 GiB at the reserved address", result);
+    if (result == 0 && whole == base) {
+      NEXT("touch one byte at the start, the middle and the end");
+      base[0] = 1;
+      base[full / 2] = 2;
+      base[full - 1] = 3;
+      Check(base[0] == 1 && base[full / 2] == 2 && base[full - 1] == 3, "the full mapping is usable");
+      NEXT("unmap the 4.5 GiB");
+      Result("unmap the 4.5 GiB", sceKernelMunmap(base, full));
+    }
+    NEXT("release the 4.5 GiB");
+    Result("release the 4.5 GiB", sceKernelReleaseDirectMemory(full_start, full));
+  } else {
+    NEXT("release the reservation");
+    Result("release the reservation", sceKernelMunmap(base, total));
+  }
+}
+
+#endif  // MCLA_STEP == 11
+
 }  // namespace
 
 int main() {
   alarm(60);  // watchdog: the process ends by itself whatever happens
   Line("mcla-arena step %d starts, pid %d", MCLA_STEP, getpid());
   Line("host page size %zu", rex::memory::page_size());
+#ifdef MCLA_TITLE
+  // Standard output goes nowhere in a title; give the runtime's log a sink
+  // that writes to the PC's connection.
+  NEXT("add a log sink on the title log connection");
+  rex::AddSink(std::make_shared<MclaFdSink>(g_mcla_log_fd));
+#endif
 
 #if (MCLA_STEP >= 1 && MCLA_STEP <= 4) || MCLA_STEP == 9
   {
@@ -462,6 +747,10 @@ int main() {
   TestFault(FaultMode::kSkip);
 #elif MCLA_STEP == 7
   TestFault(FaultMode::kEmulateLoad);
+#elif MCLA_STEP == 10
+  TestRawArenaCalls();
+#elif MCLA_STEP == 11
+  TestDirectMemory();
 #elif MCLA_STEP == 8
   TestFault(FaultMode::kUnprotect);
   TestFault(FaultMode::kSkip);

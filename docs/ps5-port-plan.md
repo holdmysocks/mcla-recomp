@@ -144,7 +144,32 @@ Two things learned about titles from these runs:
 - **`dup2` onto descriptors 1 and 2 fails with `EPERM` in a title.** Standard output cannot be redirected to a socket, so a title's log has to be written to the connection itself (`g_mcla_log_fd` in `ps5/title_log.h`). The runtime's log will need a sink of its own for the game title.
 - A title can listen on a TCP port and accept a connection from the PC before `main` runs.
 
-Step 9 (the memory steps together) **fails as a title**: the process dies inside `Memory::Initialize` with a jump to address 0, caught by the crash reporter; the console is unaffected. A jump to 0 is a call through an import that no module available to a title exports (a payload is given a different kernel library, which is why the same code passes there). `ps5/probes/symcheck/title_main.cpp` is a print-only title that lists every such import.
+Step 9 (the memory steps together) **fails as a title**: the process dies inside `Memory::Initialize` with a jump to address 0, caught by the crash reporter; the console is unaffected. A jump to 0 is a call through an import that no module available to a title exports (a payload is given a different kernel library, which is why the same code passes there). `ps5/probes/symcheck/title_main.cpp` is a print-only title that lists every such import. Its first run, on the payload builds' 311 imports, found none null. The backtrace from a second step 9 run (after fixing the crash reporter's stack scan for a title's low load address) named the call: `spdlog::details::os::in_terminal` calls `isatty`, from the coloured console sink that the runtime's first log line creates. `isatty` is not in a payload's dynamic import list, so the check has to be built from the title's own imports (433 names with the game's). The memory code itself has still not run as a title.
+
+Run over the title's own imports, the check found six null functions: `isatty`, `link`, `mkstemp`, `pathconf`, `readlink`, `symlink`. `ps5/title_support.c` supplies replacements and `ps5/title_build.sh` binds them. With those, step 9 reaches `Memory::Initialize`, which **returns failure** (no crash; console unaffected). The runtime's message giving the reason went to standard output and was lost, so two things were added: a log sink that writes to the title log connection (`ps5/log_fd_sink.h`), and step 10, which makes the arena's raw system calls one at a time with error codes, for `shm_open(SHM_ANON)`, a named `shm_open` and (title only) `memfd_create`. Step 10 passes as a payload, 16 of 16.
+
+**Step 10 as a title gives the reason.** All three ways of creating the object succeed, and all three fail at the same call: `ftruncate` to 0x120010000 returns `ENOMEM`. A title has a memory budget that a payload process does not, and a 4.5 GiB shared object is over it. So in a title the arena cannot be backed the way it is in a payload. Step 11 (title only) asks what can be used instead: how large a shared object a title may have, and whether direct memory can do the job (`sceKernelReserveVirtualRange` for the range, one `sceKernelAllocateDirectMemory` allocation mapped at two addresses with `sceKernelMapDirectMemory`, protection changes with both `sceKernelMprotect` and plain `mprotect`, and finally one 4.5 GiB allocation mapped whole).
+
+**Step 11 as a title: pass, 15 of 15.** What it measured on firmware 13.42:
+
+| Question | Answer |
+|---|---|
+| Direct memory | 12,288 MiB total, 12,270 MiB free in one range |
+| Flexible memory (anonymous mappings, libc, shared objects) | 448 MiB configured, 418 MiB available |
+| Largest shared object | 256 MiB sizes; 1 GiB is refused. It comes out of the flexible budget |
+| Reserve 4.5 GiB of address space (`sceKernelReserveVirtualRange`) | Works; placed at 0x200020000 |
+| One direct allocation mapped at two addresses | Works; the views are the same memory |
+| Protection changes on a direct-memory view | `sceKernelMprotect` and plain `mprotect` both work, including to no access |
+| Mapping direct memory with no access | Works |
+| 4.5 GiB of direct memory in one allocation, mapped whole | Works; start, middle and end usable |
+
+**Resulting change to the runtime** (`memory_posix.cpp`, `xmemory.cpp`, `rex/memory/utils.h`): `CreateFileMappingHandle` still tries the shared object first, and when it cannot be sized falls back to one direct-memory allocation of the same length. `MapFileView`, `UnmapFileView` and the new `ReserveFileMappingRange` / `ReleaseFileMappingRange` do the right thing for either backing, and the arena's reservation and views now go through them. The direct-memory functions are weak references, so a build whose kernel library lacks them still links. A payload takes the shared-object path exactly as before (the memory steps re-run as a payload after the change: 35 of 35).
+
+Costs and open points of the direct-memory backing:
+
+- It is **eager**: 4.5 GiB of the title's 12 GiB is taken at start, whether the guest uses it or not. A shared object is committed page by page. Enough for now; the unused guest ranges could be left unbacked later.
+- Decommit still calls `madvise(MADV_DONTNEED)`, whose effect on direct memory is unknown. If the guest relies on decommitted pages reading as zero when recommitted, that needs handling.
+- Not yet run as a title.
 
 Rules adopted for further console runs:
 

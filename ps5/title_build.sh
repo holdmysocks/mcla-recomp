@@ -78,6 +78,22 @@ stub libSceAgcDriver vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
 # shellcheck disable=SC1091
 source "$root/tools/radv-link.sh"
 radv_link_recipe "$root" "$sdk_root" "$archive" || exit 2
+
+# Functions that are null in a title (title_support.c says how they were
+# found), bound the way the recipe binds its own: --defsym, name kept local.
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+tr -d '\r' < "$here/title_support.c" > "$work/title_support.c"
+cc -std=c11 -O2 -Wall -Wextra -fPIC -ffunction-sections -c "$work/title_support.c" -o "$work/obj/title_support.o"
+{
+    printf '{\n    local:\n'
+    for name in isatty link symlink readlink pathconf mkstemp; do
+        radv_link_flags+=("--defsym=$name=mcla_title_$name")
+        printf '        %s;\n' "$name"
+    done
+    printf '};\n'
+} > "$work/title-support-local.map"
+radv_link_flags+=(--version-script "$work/title-support-local.map")
+set -- "$work/obj/title_support.o" "$@"
 "$sdk_root/bin/prospero-lld" -T "$work/ld/ps5-pie-unwind.ld" -L "$work/ld" --eh-frame-hdr "${radv_link_flags[@]}" \
     --version-script "$native/app-symbols.map" --exclude-libs=ALL \
     -e _start -o "$work/llvm-pie.elf" \
