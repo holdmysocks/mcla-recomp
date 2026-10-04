@@ -11,11 +11,22 @@
 // If nobody connects within the wait, the title exits without running the
 // test: a run whose output cannot be seen is not worth the risk.
 //
-// Call MclaTitleLogConnect() first thing in a constructor(101) function.
+// Call MclaTitleLogConnect() first thing in a constructor(101) function, and
+// write log lines to g_mcla_log_fd rather than to descriptor 1: in the first
+// title run, text written to standard output after dup2() never reached the
+// PC. The redirection is still attempted, for code that only knows standard
+// output (the runtime's log), and its result is reported.
 
 #pragma once
 
+// Where log lines go: the loader socket (1) in a payload, the PC's connection
+// in a title.
+inline int g_mcla_log_fd = 1;
+
 #ifdef MCLA_TITLE
+
+#include <cerrno>
+#include <cstdio>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -52,10 +63,19 @@ inline void MclaTitleLogConnect() {
   if (connection < 0) _exit(94);
   close(listener);
   setsockopt(connection, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-  dup2(connection, 1);
-  dup2(connection, 2);
+  g_mcla_log_fd = connection;
   static const char hello[] = "title log connected\n";
-  (void)!write(1, hello, sizeof hello - 1);
+  (void)!write(connection, hello, sizeof hello - 1);
+  const int out = dup2(connection, 1);
+  const int out_errno = errno;
+  const int err = dup2(connection, 2);
+  const int err_errno = errno;
+  char report[160];
+  const int length =
+      std::snprintf(report, sizeof report,
+                    "connection fd %d; dup2 to 1 returned %d (errno %d), to 2 returned %d (errno %d)\n",
+                    connection, out, out < 0 ? out_errno : 0, err, err < 0 ? err_errno : 0);
+  if (length > 0) (void)!write(connection, report, static_cast<size_t>(length));
 }
 
 #else

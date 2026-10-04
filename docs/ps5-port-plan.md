@@ -131,7 +131,19 @@ The crashed title's linked ELF was still on the build host (`build/mcla-arena/ll
 
 So that title cannot have run any of its tests. It would have faulted on the first call from the startup code into `main`, which is consistent with there being no log at all. The suspects in the table above (fixed views, reserve and release, the context write-back, the driver's constructors) were never reached, and each has since passed as a payload.
 
-Why an immediate fault in a title took the whole console down, rather than just ending the title, is **not** known. A title built with the corrected script (`ps5/title_build.sh`, which also fails the build if any executable section is outside `.text`) has not yet been run.
+Why an immediate fault in a title took the whole console down, rather than just ending the title, is **not** known. A title built with the corrected script (`ps5/title_build.sh`, which also fails the build if any executable section is outside `.text`) does not take the console down:
+
+| Title run | Result |
+|---|---|
+| `PPSA99779`, arena step 0 (startup only), first build | Connected to the log receiver and exited; no text arrived. Console unaffected |
+| Same, log written to the socket directly | Pass: all lines received. Console unaffected |
+
+Two things learned about titles from these runs:
+
+- **`dup2` onto descriptors 1 and 2 fails with `EPERM` in a title.** Standard output cannot be redirected to a socket, so a title's log has to be written to the connection itself (`g_mcla_log_fd` in `ps5/title_log.h`). The runtime's log will need a sink of its own for the game title.
+- A title can listen on a TCP port and accept a connection from the PC before `main` runs.
+
+The memory and fault steps have not been run as a title yet. Steps 8 (5 to 7 together) and 9 (1 to 4 together) exist for that.
 
 Rules adopted for further console runs:
 

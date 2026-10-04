@@ -19,6 +19,12 @@
 //   7  no arena. One fault, resolved by emulating a load: the handler writes a
 //      changed register and instruction pointer back
 //
+//   8  steps 5, 6 and 7 in one run
+//   9  steps 1 to 4 in one run
+//
+// 8 and 9 are for re-running as a title what has already passed step by step
+// as a payload.
+//
 // Steps 5 to 7 use the runtime's PS5 fault handler without the arena, so a
 // problem there is not confused with a memory-layout problem.
 
@@ -35,7 +41,7 @@
 #include <rex/system/xmemory.h>
 
 #ifndef MCLA_STEP
-#error "build with -DMCLA_STEP=0..7"
+#error "build with -DMCLA_STEP=0..9"
 #endif
 
 #include <signal.h>
@@ -59,7 +65,7 @@ extern "C" char __executable_start[] __attribute__((weak));
 namespace {
 
 void EarlyWrite(const char* text) {
-  (void)!write(1, text, std::strlen(text));
+  (void)!write(g_mcla_log_fd,text, std::strlen(text));
 }
 
 void EarlyHex(const char* label, uint64_t value) {
@@ -71,7 +77,7 @@ void EarlyHex(const char* label, uint64_t value) {
   buffer[n++] = 'x';
   for (int shift = 60; shift >= 0; shift -= 4) buffer[n++] = digits[(value >> shift) & 0xF];
   buffer[n++] = '\n';
-  (void)!write(1, buffer, n);
+  (void)!write(g_mcla_log_fd,buffer, n);
 }
 
 int EarlyAnchor() { return 0; }
@@ -125,10 +131,11 @@ void Line(const char* format, ...) {
   char text[512];
   va_list args;
   va_start(args, format);
-  std::vsnprintf(text, sizeof text, format, args);
+  std::vsnprintf(text, sizeof text - 1, format, args);
   va_end(args);
-  std::printf("%s\n", text);
-  std::fflush(stdout);
+  const size_t length = std::strlen(text);
+  text[length] = '\n';
+  (void)!write(g_mcla_log_fd, text, length + 1);
 }
 
 // Printed before an operation, so the last "NEXT" line names what was running
@@ -343,7 +350,7 @@ bool FaultHandler(rex::arch::Exception* ex, void*) {
     // Async-signal-safe output only.
     static const char message[] = "ABORT handler: instruction pointer is not in the faulting function; "
                                   "context layout is wrong, exiting without writing it back\n";
-    (void)!write(1, message, sizeof message - 1);
+    (void)!write(g_mcla_log_fd,message, sizeof message - 1);
     _exit(4);
   }
   switch (g_fault.mode) {
@@ -420,7 +427,7 @@ int main() {
   Line("mcla-arena step %d starts, pid %d", MCLA_STEP, getpid());
   Line("host page size %zu", rex::memory::page_size());
 
-#if MCLA_STEP >= 1 && MCLA_STEP <= 4
+#if (MCLA_STEP >= 1 && MCLA_STEP <= 4) || MCLA_STEP == 9
   {
   NEXT("construct rex::memory::Memory");
   Memory memory;
@@ -438,6 +445,10 @@ int main() {
     TestPhysicalHeap(memory);
 #elif MCLA_STEP == 4
     TestSystemHeapAndLargeCommit(memory);
+#elif MCLA_STEP == 9
+    TestVirtualHeaps(memory);
+    TestPhysicalHeap(memory);
+    TestSystemHeapAndLargeCommit(memory);
 #endif
   }
   NEXT("destroy rex::memory::Memory (unmaps the arena)");
@@ -448,6 +459,10 @@ int main() {
 #elif MCLA_STEP == 6
   TestFault(FaultMode::kSkip);
 #elif MCLA_STEP == 7
+  TestFault(FaultMode::kEmulateLoad);
+#elif MCLA_STEP == 8
+  TestFault(FaultMode::kUnprotect);
+  TestFault(FaultMode::kSkip);
   TestFault(FaultMode::kEmulateLoad);
 #endif
 
