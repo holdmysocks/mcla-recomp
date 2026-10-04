@@ -47,6 +47,7 @@
 #include <thread>
 
 #include <rex/cvar.h>
+#include <rex/input/input_system.h>
 #include <rex/kernel/crt/heap.h>
 #include <rex/kernel/init.h>
 #include <rex/logging.h>
@@ -142,15 +143,23 @@ void EarlyCrash(int signal_number, siginfo_t* info, void* context) {
   _exit(100 + signal_number);
 }
 
+void ReportExit() {
+  EarlyWrite("EXIT: the process is leaving through exit()\n");
+}
+
 __attribute__((constructor(101))) void InstallEarlyCrashReporter() {
   MclaTitleLogConnect();
+  atexit(ReportExit);
   EarlyWrite("early constructor: installing the crash reporter\n");
   struct sigaction action;
   std::memset(&action, 0, sizeof action);
   action.sa_sigaction = EarlyCrash;
   action.sa_flags = SA_SIGINFO;
   sigemptyset(&action.sa_mask);
-  for (int signal_number : {SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE}) {
+  // Beyond the faults: anything else catchable that would end the process
+  // without a word (a refused system call arrives as SIGSYS).
+  for (int signal_number : {SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE, SIGSYS, SIGTRAP, SIGTERM,
+                            SIGHUP, SIGQUIT, SIGPIPE, SIGXFSZ}) {
     sigaction(signal_number, &action, nullptr);
   }
 }
@@ -349,6 +358,11 @@ int main() {
   // know it will present before the runtime wires it to the guest.
   NEXT("SDL application context on the offscreen video driver");
   rex::cvar::SetFlagByName("video_driver", "offscreen");
+  // The SDL input driver looks for an optional controller mapping file by a
+  // relative path. In a title that lookup fails with an error other than "not
+  // found", which std::filesystem::exists turns into an exception nobody
+  // catches. There is no such file here; do not look.
+  rex::cvar::SetFlagByName("hid_mappings_file", "");
   rex::ui::SDLWindowedAppContext app_context;
   if (!app_context.Initialize()) {
     return Finish("the SDL application context did not initialise", 9);
@@ -387,7 +401,10 @@ int main() {
   config.kernel_init = rex::kernel::InitializeKernel;
 #if MCLA_STAGE >= 7
   config.graphics = std::move(graphics);
-  // No input system yet: P7.
+  // The game asks about controllers as soon as it has graphics, and the kernel
+  // calls it uses assume an input system exists. The default one, as on the
+  // desktop; whether it finds a controller on the console is P7.
+  config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
 #else
   // No graphics system and no input system: P5 and P7.
 #endif
@@ -403,6 +420,11 @@ int main() {
     NEXT("register guest modules");
     image.register_modules(runtime->kernel_state());
   }
+#if MCLA_STAGE >= 7
+  if (runtime->input_system()) {
+    static_cast<rex::input::InputSystem*>(runtime->input_system())->AttachWindow(window.get());
+  }
+#endif
   Line("PASS Runtime::Setup");
   if (MCLA_STAGE <= 1) return Finish("stage 1 complete", 0);
 
