@@ -2,6 +2,10 @@
 
 Static recompilation of *Midnight Club: Los Angeles Complete Edition* (Xbox 360, title 545407F8) to native code, for PC and for jailbroken PS5 consoles.
 
+![The game installed on a PS5 home screen](docs/images/ps5-home-screen.webp)
+
+*Installed on a jailbroken PS5. The tile here is one the user supplied at build time; the background is made from the art on their own disc.*
+
 **This repository contains no game code, assets or keys.** You supply your own legally obtained copy; a script extracts what is needed on your machine, and the recompiled code is generated locally and never committed.
 
 ## Status
