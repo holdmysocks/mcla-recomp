@@ -9,7 +9,7 @@ Nothing of the game is in this repository, and no ready-made PS5 executable can 
 | | |
 |---|---|
 | The game | Your own disc image (`.iso`) of **Midnight Club: Los Angeles Complete Edition, USA/Europe, Xbox 360** (title id `545407F8`). This is the release the project was made with and the only one it is known to work with: the fixes are tied to addresses in that executable. |
-| A console | A jailbroken PS5 that can run homebrew titles. Tested on one console only: a PS5 Pro on firmware 13.42. |
+| A console | A jailbroken PS5 that can run homebrew titles. Tested on two consoles: a PS5 Pro on firmware 13.42, where the development and all measurements were done, and a PS5 Slim on firmware 12.70, installed from scratch with this procedure and reported to run well. |
 | On the console | An FTP server payload (the build uploads over FTP; port 2121 by default) and a homebrew mounter that puts folders under `/data/homebrew` on the home screen (ShadowMountPlus is what was used). |
 | A PC | Windows 10/11 with WSL2, or a PC running Arch Linux. x86-64, about 30 GB of free disk, 16 GB of memory or more. |
 | Time | About 45 minutes the first time on a 16-core PC (the Vulkan driver about 20, everything else about 25), plus the upload of 6 GB of game data. Later builds take a minute or two. |

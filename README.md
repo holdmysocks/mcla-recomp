@@ -15,7 +15,7 @@ Static recompilation of *Midnight Club: Los Angeles Complete Edition* (Xbox 360,
 | Windows, D3D12 | Boots; menus, races, garage and upgrades work with audio and controller. 30 FPS with occasional texture-load hitches. |
 | Windows, Vulkan | Reaches the title screen. Not tested further. |
 | Linux | Not built yet. |
-| PS5 (jailbroken) | Plays: career, races, garage, saves, audio and controller, at a steady 30 FPS on a PS5 Pro (firmware 13.42, the only console tested). The zoomed-out map runs at 20 to 25. Build and install with one command: `docs/ps5-build-guide.md`. |
+| PS5 (jailbroken) | Plays: career, races, garage, saves, audio and controller, at a steady 30 FPS on a PS5 Pro (firmware 13.42), where the zoomed-out map runs at 20 to 25. Also tested on a PS5 Slim (firmware 12.70), installed from scratch with the one-command build, where it runs well; frame rates were measured on the Pro only. Build and install with one command: `docs/ps5-build-guide.md`. |
 
 Details and open problems: `docs/known-issues.md`.
 
