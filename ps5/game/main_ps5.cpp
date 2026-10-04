@@ -55,6 +55,7 @@
 #include <rex/kernel/crt/heap.h>
 #include <rex/kernel/init.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/runtime.h>
 #include <rex/system/gpu_plugin.h>
 #include <rex/ui/presenter.h>
@@ -69,6 +70,10 @@
 
 // FreeBSD's thread id call; its header is not in every SDK.
 extern "C" int pthread_getthreadid_np(void);
+
+namespace rex::arch {
+uint64_t Ps5FaultCount();
+}
 
 // As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC; as
 // a payload g_mcla_log_fd is standard output, the loader socket.
@@ -597,6 +602,18 @@ int main() {
     for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
       if (second <= 30 || second % 30 == 0) Line("alive: %d s", second);
+      // Every five seconds: how many protection changes and faults the
+      // runtime made, the two costs the profile points at.
+      if (second % 5 == 0) {
+        static uint64_t last_protects = 0, last_faults = 0;
+        const uint64_t protects = rex::memory::Ps5ProtectCallCount();
+        const uint64_t faults = rex::arch::Ps5FaultCount();
+        Line("STATS %d s: %llu protection changes/s, %llu faults/s", second,
+             static_cast<unsigned long long>((protects - last_protects) / 5),
+             static_cast<unsigned long long>((faults - last_faults) / 5));
+        last_protects = protects;
+        last_faults = faults;
+      }
       // Twice, a few seconds apart: a thread at the same place both times is
       // stuck there, one that has moved is running.
       if (second == 4 || second == 8) {

@@ -53,10 +53,10 @@ index d876846..500ee36 100644
  struct clock_time_conversion {};
  
 diff --git a/include/rex/memory/utils.h b/include/rex/memory/utils.h
-index 8ccb52c..cea0a2f 100644
+index 8ccb52c..7095cab 100644
 --- a/include/rex/memory/utils.h
 +++ b/include/rex/memory/utils.h
-@@ -152,6 +152,15 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+@@ -152,6 +152,17 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
                    size_t file_offset);
  bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length);
  
@@ -67,6 +67,8 @@ index 8ccb52c..cea0a2f 100644
 +// an installed title). Returns nullptr on failure.
 +void* ReserveFileMappingRange(FileMappingHandle handle, size_t length);
 +bool ReleaseFileMappingRange(FileMappingHandle handle, void* base_address, size_t length);
++// Number of Protect() calls made so far, for performance diagnosis.
++uint64_t Ps5ProtectCallCount();
 +#endif
 +
  inline size_t hash_combine(size_t seed) {
@@ -194,6 +196,72 @@ index 352af67..2395dc9 100644
  #endif
  };
  
+diff --git a/include/rex/thread/mutex.h b/include/rex/thread/mutex.h
+index 6e5755a..51a0674 100644
+--- a/include/rex/thread/mutex.h
++++ b/include/rex/thread/mutex.h
+@@ -13,8 +13,40 @@
+ 
+ #include <mutex>
+ 
++#include <rex/platform.h>
++
++#if REX_PLATFORM_PS5
++#include <immintrin.h>
++#endif
++
+ namespace rex::thread {
+ 
++#if REX_PLATFORM_PS5
++// Taking the global lock on PS5: try for a short while before sleeping on it.
++//
++// The lock is held briefly but taken constantly, by the GPU command thread,
++// the guest's main thread, the audio thread and the vsync thread. A profile of
++// the game on the console showed the GPU thread blocked on it for over 40% of
++// its time, far more than the work done under the lock accounts for: a thread
++// that finds it taken sleeps in the kernel, and getting it running again
++// costs much more than the wait was worth. Spinning covers the common case,
++// where the holder is a few tens of microseconds from releasing it.
++inline std::unique_lock<std::recursive_mutex> AcquireGlobalLockSpinning(
++    std::recursive_mutex& mutex) {
++  std::unique_lock<std::recursive_mutex> lock(mutex, std::try_to_lock);
++  for (int attempt = 0; !lock.owns_lock() && attempt < 4000; ++attempt) {
++    for (int pause = 0; pause < 24; ++pause) {
++      _mm_pause();
++    }
++    lock.try_lock();
++  }
++  if (!lock.owns_lock()) {
++    lock.lock();
++  }
++  return lock;
++}
++#endif
++
+ // The global critical region mutex singleton.
+ // This must guard any operation that may suspend threads or be sensitive to
+ // being suspended such as global table locks and such.
+@@ -62,12 +94,20 @@ class global_critical_region {
+   // to keep an instance of global_critical_region near the members requiring
+   // it to keep things readable.
+   static std::unique_lock<std::recursive_mutex> AcquireDirect() {
++#if REX_PLATFORM_PS5
++    return AcquireGlobalLockSpinning(mutex());
++#else
+     return std::unique_lock<std::recursive_mutex>(mutex());
++#endif
+   }
+ 
+   // Acquires a lock on the global critical section.
+   inline std::unique_lock<std::recursive_mutex> Acquire() {
++#if REX_PLATFORM_PS5
++    return AcquireGlobalLockSpinning(mutex());
++#else
+     return std::unique_lock<std::recursive_mutex>(mutex());
++#endif
+   }
+ 
+   // Acquires a deferred lock on the global critical section.
 diff --git a/include/rex/ui/renderdoc_api.h b/include/rex/ui/renderdoc_api.h
 index 536f710..9fcc46d 100644
 --- a/include/rex/ui/renderdoc_api.h
@@ -405,10 +473,10 @@ index fcfd6c9..7ac7790 100644
  
 diff --git a/src/core/exception_handler_ps5.cpp b/src/core/exception_handler_ps5.cpp
 new file mode 100644
-index 0000000..5b640a1
+index 0000000..86e8984
 --- /dev/null
 +++ b/src/core/exception_handler_ps5.cpp
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,203 @@
 +/**
 + * @file        core/exception_handler_ps5.cpp
 + * @brief       Host exception (fault) handling for PlayStation 5 homebrew.
@@ -445,6 +513,7 @@ index 0000000..5b640a1
 +#include <signal.h>
 +#include <ucontext.h>
 +
++#include <atomic>
 +#include <cstdint>
 +#include <cstring>
 +#include <utility>
@@ -475,7 +544,17 @@ index 0000000..5b640a1
 +                                       kMachineContextOffset);
 +}
 +
++}  // namespace
++
++std::atomic<uint64_t> g_ps5_fault_count{0};
++uint64_t Ps5FaultCount() {
++  return g_ps5_fault_count.load(std::memory_order_relaxed);
++}
++
++namespace {
++
 +void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info, void* signal_context) {
++  g_ps5_fault_count.fetch_add(1, std::memory_order_relaxed);
 +  mcontext_t* mc = MachineContext(signal_context);
 +
 +  HostThreadContext thread_context;
@@ -706,10 +785,18 @@ index 1ec7192..f4f06ef 100644
    return i != 0;
  }
 diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
-index b52bf39..4745081 100644
+index b52bf39..89f4314 100644
 --- a/src/core/memory_posix.cpp
 +++ b/src/core/memory_posix.cpp
-@@ -37,7 +37,7 @@
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay & Rien Gupta, 2026 - Adapted for ReXGlue runtime (POSIX + macOS)
+  */
+ 
++#include <atomic>
+ #include <cerrno>
+ #include <cstddef>
+ #include <cstdio>
+@@ -37,7 +38,7 @@
  
  // macOS off_t is 64-bit with no *64 large-file variants; Linux keeps the
  // explicit *64 forms for legacy 32-bit off_t distributions.
@@ -718,7 +805,7 @@ index b52bf39..4745081 100644
  #define rex_mmap64 mmap
  #define rex_ftruncate64 ftruncate
  #else
-@@ -57,9 +57,46 @@
+@@ -57,9 +58,48 @@
  // #include "xenia/base/main_android.h"
  #endif
  
@@ -754,6 +841,8 @@ index b52bf39..4745081 100644
 +int64_t g_direct_start = -1;
 +size_t g_direct_length = 0;
 +
++std::atomic<uint64_t> g_ps5_protect_calls{0};
++
 +bool DirectMemoryAvailable() {
 +  return &sceKernelAllocateDirectMemory && &sceKernelReleaseDirectMemory &&
 +         &sceKernelMapDirectMemory && &sceKernelGetDirectMemorySize &&
@@ -765,7 +854,7 @@ index b52bf39..4745081 100644
  // Convert a filesystem path to a valid shm_open name (must start with /, no other slashes).
  // macOS enforces a 31-character total limit, so long names are folded from the full path rather
  // than only the filename. This keeps equal filenames in different directories distinct.
-@@ -262,7 +299,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+@@ -262,7 +302,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
      // range uses mprotect to avoid clobbering the existing reservation. Do not
      // widen sub-host-page requests here - higher-level guest heaps must reconcile
      // all guest permissions sharing a host page first.
@@ -774,7 +863,7 @@ index b52bf39..4745081 100644
    if (base_address != nullptr && allocation_type == AllocationType::kCommit) {
      const size_t host_page = page_size();
      const uintptr_t address = reinterpret_cast<uintptr_t>(base_address);
-@@ -284,7 +321,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+@@ -284,7 +324,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
    if (base_address) {
      flags |= MAP_FIXED;
    }
@@ -783,7 +872,19 @@ index b52bf39..4745081 100644
    if (base_address) {
      flags |= MAP_FIXED_NOREPLACE;
    }
-@@ -473,6 +510,37 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+@@ -365,6 +405,11 @@ bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* o
+ #endif
+ 
+   uint32_t prot = ToPosixProtectFlags(access);
++#if REX_PLATFORM_PS5
++  // A protection change costs about 26 us on the console whatever its size, so
++  // how many there are is worth knowing (see Ps5ProtectCallCount).
++  g_ps5_protect_calls.fetch_add(1, std::memory_order_relaxed);
++#endif
+   int ret = mprotect(base_address, length, prot);
+   if (ret != 0) {
+     REXSYS_ERROR("mprotect({}, 0x{:X}, {}) failed: {} ({})", base_address, length, prot,
+@@ -473,6 +518,37 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
        return kFileMappingHandleInvalid;
    }
    oflag |= O_CREAT;
@@ -821,7 +922,7 @@ index b52bf39..4745081 100644
    auto full_path = MakeShmName(path);
    int ret = shm_open(full_path.c_str(), oflag, 0777);
    if (ret < 0) {
-@@ -484,12 +552,24 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+@@ -484,12 +560,24 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
      return kFileMappingHandleInvalid;
    }
    return static_cast<FileMappingHandle>(ret);
@@ -847,7 +948,7 @@ index b52bf39..4745081 100644
    auto full_path = MakeShmName(path);
    shm_unlink(full_path.c_str());
  #endif
-@@ -513,6 +593,25 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+@@ -513,6 +601,25 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
    }
  
    uint32_t prot = ToPosixProtectFlags(access);
@@ -873,7 +974,7 @@ index b52bf39..4745081 100644
    void* result = rex_mmap64(base_address, length, prot, flags, static_cast<int>(handle),
                              static_cast<off_t>(file_offset));
    if (result == MAP_FAILED) {
-@@ -529,8 +628,40 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+@@ -529,8 +636,44 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
  }
  
  bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length) {
@@ -882,10 +983,14 @@ index b52bf39..4745081 100644
 +    return sceKernelMunmap(base_address, length) == 0;
 +  }
 +#endif
-+  return munmap(base_address, length) == 0;
+   return munmap(base_address, length) == 0;
+ }
+ 
++#if REX_PLATFORM_PS5
++uint64_t Ps5ProtectCallCount() {
++  return g_ps5_protect_calls.load(std::memory_order_relaxed);
 +}
 +
-+#if REX_PLATFORM_PS5
 +void* ReserveFileMappingRange(FileMappingHandle handle, size_t length) {
 +  if (handle == kDirectMemoryHandle) {
 +    void* address = nullptr;
@@ -908,10 +1013,10 @@ index b52bf39..4745081 100644
 +  if (handle == kDirectMemoryHandle) {
 +    return sceKernelMunmap(base_address, length) == 0;
 +  }
-   return munmap(base_address, length) == 0;
- }
++  return munmap(base_address, length) == 0;
++}
 +#endif
- 
++
  }  // namespace memory
  }  // namespace rex
 diff --git a/src/core/perf/counter.cpp b/src/core/perf/counter.cpp

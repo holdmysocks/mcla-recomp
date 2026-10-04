@@ -163,6 +163,32 @@ The stage 5 title imports eight functions the console import check did not cover
 - **P6 reached, 2026-10-04 01:07 (user report): the game loads and reaches its title screen on the console's display.** The intro movies play too fast, the same pacing issue the desktop build has above 30 FPS. No button did anything: there was no controller backend.
 - **Controller (P7, first half).** SDL has no gamepad backend on the console. `ps5/game/ps5_pad_input.h` is an input driver on the console's own pad library (`sceUserServiceGetInitialUser`, `scePadOpen`, `scePadReadState`), mapped to an Xbox 360 controller: cross/circle/square/triangle to A/B/X/Y, L1/R1 to the shoulders, L2/R2 to the analogue triggers, L3/R3 to the stick clicks, OPTIONS to START, the touchpad click to BACK, with stick y inverted and a small dead zone. Only the first ten bytes of the pad state are read (buttons, sticks, triggers). The title host builds its input system from this driver alone, with the stand-in driver if no pad opens. Not yet run.
 
+## P7/P8: in-game on the console (2026-10-04)
+
+**Input works.** `ps5/game/ps5_pad_input.h` on the console's pad library; the user played with it: menus, career, driving in the city. Full screen, correct proportions on a 4K display.
+
+**No audio yet.** SDL's only audio driver here is `dsp`, which finds no device; the silent fallback runs. An audio output driver on the console's own audio library is still to write.
+
+**Performance is the open problem: 8 to 17 presents a second, choppy, physics feel wrong.** What has been measured:
+
+| Measurement | Result |
+|---|---|
+| Sampling profile while driving (host profiler, `ps5/profile_report.py`), three sessions | 36 of 40 runtime threads idle. GPU command thread: about 40% blocked in `std::recursive_mutex::lock`, about 20% in `rex::memory::Protect` under `PhysicalHeap::EnableAccessCallbacks` from `SharedMemory::RequestRanges`, the rest rendering. Main guest thread: about 35% in the GPU fence wait, 25% in game code |
+| Arena step 13, timings in a title | `mprotect`: 26 us a call, the same for anonymous and direct memory, 1 page or 64, fragmented or not. Protect + faulting write + handler + retry: 57 us. `std::recursive_mutex` lock+unlock: 0.013 us alone, 2.9 us with four threads in a tight loop |
+| Host counters, every 5 s | About 6,500 protection changes and 900 faults a second, steady from the menus to driving |
+
+Reading: 6,500 protection changes at 26 us are 17% of one thread, real but not the 40% the GPU thread spends blocked. The profile's "on the stack" figures include stale stack words and are not reliable; the "most often in" figures are.
+
+Changes tried:
+
+| Change | Effect |
+|---|---|
+| Emulated console vsync off (as the desktop host does) | None felt |
+| `physical_watch_granularity` = 64 KiB (new runtime setting; write-watch units of 64 KiB, not the 16 KiB host page) | Confirmed active; no change in the present rate or in how it felt. Kept as a setting |
+| Global critical region spins before sleeping on PS5 (`AcquireGlobalLockSpinning` in `rex/thread/mutex.h`) | Built and uploaded; **not yet run** |
+
+The title's name and art: `ps5/make_title_art.py` reads the dashboard art from the user's own `nxeart` (an STFS package) and writes a background and a tile (the corner of the background that carries the game's logo) to an ignored folder; `ps5/title_build.sh` converts them when `ART_DIR` is set. The shell caches a title's name and art at registration, so the tile has to be deleted and re-registered to show a change.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

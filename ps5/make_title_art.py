@@ -7,7 +7,7 @@ in `nxeart`, an STFS package (magic PIRS) with a 1920x1080 background and a
 game folder and writes, into an output folder that is not in the repository:
 
     background.png   1920x1080, the dashboard background
-    icon.png         512x512, the banner centred on black
+    icon.png         512x512, the corner of the background that carries the logo
 
 ps5/title_build.sh then converts them to the console's formats (through the
 driver project's tools/prepare-assets.sh) when ART_DIR points at that folder.
@@ -89,14 +89,15 @@ def main() -> int:
     os.makedirs(out, exist_ok=True)
     background.save(os.path.join(out, 'background.png'))
 
-    icon = Image.new('RGB', (512, 512), (0, 0, 0))
-    source = banner if banner is not None else background
-    scale = min(512 / source.width, 512 / source.height)
-    resized = source.resize((round(source.width * scale), round(source.height * scale)), Image.LANCZOS)
-    icon.paste(resized, ((512 - resized.width) // 2, (512 - resized.height) // 2))
+    # The tile: the square of the background that holds the game's logo (top
+    # right, over the skyline). The banner in the package is a car with no
+    # logo on it, which says little on a home screen. The fractions are of the
+    # 1920x1080 image.
+    left, top, side = round(background.width * 0.565), round(background.height * 0.052), round(background.height * 0.50)
+    icon = background.crop((left, top, left + side, top + side)).resize((512, 512), Image.LANCZOS)
     icon.save(os.path.join(out, 'icon.png'))
-    print('wrote background.png %dx%d and icon.png 512x512 (from the %s) to %s' % (
-        background.width, background.height, 'banner' if banner is not None else 'background', out))
+    print('wrote background.png %dx%d and icon.png 512x512 (the logo corner of the background) to %s' % (
+        background.width, background.height, out))
     return 0
 
 
