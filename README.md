@@ -23,7 +23,7 @@ The game's PowerPC code is translated to C++ ahead of time by the [ReXGlue SDK](
 
 Requirements: Git, CMake 3.25+, Ninja, Clang 20, Visual Studio Build Tools (for the Windows SDK), Python 3.
 
-1. Clone ReXGlue v0.10.0 (`f5337cdc`) with submodules into `third_party/rexglue-sdk` and apply everything in `patches/` with `git apply`.
+1. Clone ReXGlue v0.10.0 (`f5337cdc`) with submodules into `third_party/rexglue-sdk` and apply the patches as described in `patches/README.md`.
    On Windows, git checks out the libmspack symlinks as text files; replace them with copies of their targets.
 2. Build and install the SDK: `cmake --preset win-amd64 -DREXGLUE_USE_VULKAN=ON -DREXGLUE_ENABLE_TRACY=OFF`, then build and install the `Release` configuration.
 3. Extract your disc image: `python scripts/extract_game.py <your.iso>`. Files go to `game/`, which is gitignored.

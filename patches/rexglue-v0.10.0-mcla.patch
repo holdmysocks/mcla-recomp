@@ -1,0 +1,744 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9b3cdf5..af378d8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -28,7 +28,7 @@ if(REXGLUE_ENABLE_TRACY)
+     add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PROFILING>)
+ endif()
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+-    add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++    add_compile_definitions(REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ # Graphics backend selection
+@@ -158,6 +158,11 @@ if(WIN32)
+         message(FATAL_ERROR "Unsupported Windows architecture: ${REX_TARGET_PROCESSOR}")
+     endif()
+     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
++elseif(PS5 OR PROSPERO)
++    # PlayStation 5 homebrew (ps5-payload-sdk toolchain file sets PS5).
++    # FreeBSD-derived, so UNIX is true, but it is not Linux.
++    set(REX_PLATFORM "ps5-amd64")
++    add_compile_definitions(REX_PLATFORM_PS5=1)
+ elseif(UNIX AND NOT APPLE)
+     if(REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
+         set(REX_PLATFORM "linux-amd64")
+@@ -288,7 +293,11 @@ message(STATUS "===========================================")
+ # SDK install/export rules (skipped when consumed as a subdirectory)
+ if(PROJECT_IS_TOP_LEVEL)
+     include(cmake/rexglue_devenv.cmake)
+-    include(cmake/rexglue_install.cmake)
++    # The install/export rules package the SDK for desktop consumers. A PS5
++    # build links everything statically into one title and is not installed.
++    if(NOT PS5)
++        include(cmake/rexglue_install.cmake)
++    endif()
+ else()
+     # When consumed via add_subdirectory(), provide the same interface as find_package().
+     # This sets REXGLUE_SHARE_DIR and makes rexglue_configure_target() available.
+diff --git a/include/rex/chrono/chrono.h b/include/rex/chrono/chrono.h
+index d876846..500ee36 100644
+--- a/include/rex/chrono/chrono.h
++++ b/include/rex/chrono/chrono.h
+@@ -116,8 +116,9 @@ using XSystemClock = detail::NtSystemClock<detail::Domain::Guest>;
+ 
+ namespace std::chrono {
+ 
+-#ifdef __APPLE__
+-// Apple libc++ does not expose clock_time_conversion or clock_cast.
++#if defined(__APPLE__) || defined(__PROSPERO__) || defined(__FreeBSD__)
++// Apple libc++ does not expose clock_time_conversion or clock_cast, and
++// neither does the libc++ shipped with the PS5 payload SDK.
+ template <class, class>
+ struct clock_time_conversion {};
+ 
+diff --git a/include/rex/platform.h b/include/rex/platform.h
+index e90418d..5f0afef 100644
+--- a/include/rex/platform.h
++++ b/include/rex/platform.h
+@@ -38,12 +38,18 @@
+ #elif defined(__gnu_linux__)
+ #define REX_PLATFORM_GNU_LINUX 1
+ #define REX_PLATFORM_LINUX 1
++#elif defined(__PROSPERO__) || defined(__FreeBSD__)
++// PlayStation 5 homebrew (ps5-payload-sdk): FreeBSD-derived, POSIX, not Linux.
++#define REX_PLATFORM_PS5 1
+ #else
+ #error Unsupported target OS.
+ #endif
+ 
+ // Ensure all platform macros are always defined (0 when inactive)
+ // so they can be used in static_assert and regular expressions.
++#ifndef REX_PLATFORM_PS5
++#define REX_PLATFORM_PS5 0
++#endif
+ #ifndef REX_PLATFORM_MAC
+ #define REX_PLATFORM_MAC 0
+ #endif
+diff --git a/include/rex/platform/dynlib.h b/include/rex/platform/dynlib.h
+index e3fc40d..1168402 100644
+--- a/include/rex/platform/dynlib.h
++++ b/include/rex/platform/dynlib.h
+@@ -71,6 +71,14 @@ inline constexpr const char* kVulkanLoader = "libvulkan.1.dylib";
+ inline constexpr const char* kRenderDoc = "librenderdoc.dylib";
+ inline constexpr const char* kSpirvToolsSdkPath = "lib/libSPIRV-Tools-shared.dylib";
+ 
++#elif REX_PLATFORM_PS5
++
++// PS5 homebrew links its Vulkan driver statically; there is nothing to load
++// by name. Callers must take the statically linked entry points instead.
++inline constexpr const char* kVulkanLoader = "";
++inline constexpr const char* kRenderDoc = "";
++inline constexpr const char* kSpirvToolsSdkPath = "";
++
+ #else
+ #error No library names provided for the target platform.
+ #endif
+diff --git a/include/rex/string/numeric.h b/include/rex/string/numeric.h
+index 85994c7..eec442c 100644
+--- a/include/rex/string/numeric.h
++++ b/include/rex/string/numeric.h
+@@ -26,7 +26,7 @@
+ #include <rex/string/utf8.h>
+ #include <rex/vec128.h>
+ 
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+ #include <locale.h>
+ #endif
+ 
+@@ -114,7 +114,7 @@ inline T ifs(const std::string_view value, bool force_hex) {
+   return result;
+ }
+ 
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+ template <typename T>
+ inline std::from_chars_result portable_float_from_chars(const char* first, const char* last,
+                                                         T& value) {
+@@ -189,7 +189,7 @@ inline T fpfs(const std::string_view value, bool force_hex) {
+     }
+     std::memcpy(&result, &pun, sizeof(PUN));
+   } else {
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+     auto [p, error] = portable_float_from_chars(range.data(), range.data() + range.size(), result);
+ #else
+     auto [p, error] = std::from_chars(range.data(), range.data() + range.size(), result,
+@@ -316,7 +316,7 @@ inline vec128_t from_string<vec128_t>(const std::string_view value, bool force_h
+         assert_always();
+         return vec128_t();
+       }
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+       auto result = detail::portable_float_from_chars(p, end, v.f32[i]);
+ #else
+       auto result = std::from_chars(p, end, v.f32[i], std::chars_format::general);
+diff --git a/include/rex/system/xmemory.h b/include/rex/system/xmemory.h
+index 0c39a42..261e9e0 100644
+--- a/include/rex/system/xmemory.h
++++ b/include/rex/system/xmemory.h
+@@ -36,10 +36,11 @@ namespace rex::memory::detail {
+ /// sets host_address_offset when allocation_granularity() > 0x1000:
+ ///   - Windows:        64KB granularity  -> offset
+ ///   - macOS arm64:    16KB granularity  -> offset
++///   - PS5:            16KB granularity  -> offset (measured on firmware 13.42)
+ ///   - macOS x86_64:    4KB granularity  -> no offset
+ ///   - Linux (any):     4KB granularity  -> no offset (mmap handles it natively)
+ constexpr u32 PhysicalHostOffset([[maybe_unused]] u32 guest_addr) noexcept {
+-#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__))
++#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && defined(__aarch64__)) || REX_PLATFORM_PS5
+   return (guest_addr >= 0xE0000000u) ? 0x1000u : 0u;
+ #else
+   return 0u;
+@@ -558,7 +559,7 @@ class Memory {
+   bool HasAnyFunctionTable() const;
+ 
+  private:
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+   int MapViewsMac();
+ #endif
+   int MapViews(uint8_t* mapping_base);
+diff --git a/include/rex/ui/renderdoc_api.h b/include/rex/ui/renderdoc_api.h
+index 536f710..9fcc46d 100644
+--- a/include/rex/ui/renderdoc_api.h
++++ b/include/rex/ui/renderdoc_api.h
+@@ -17,7 +17,15 @@
+ #if REX_PLATFORM_MAC
+ struct RENDERDOC_API_1_0_0;
+ #else
++// renderdoc_app.h only knows Windows and Linux and needs nothing but an empty
++// calling convention from the latter. RenderDoc itself is not available on PS5.
++#if REX_PLATFORM_PS5 && !defined(__linux__)
++#define __linux__ 1
+ #include <renderdoc_app.h>
++#undef __linux__
++#else
++#include <renderdoc_app.h>
++#endif
+ #endif
+ 
+ namespace rex {
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 1ddafd0..672cf47 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -100,6 +100,8 @@ target_include_directories(rexcore PRIVATE
+ 
+ if(APPLE)
+     target_link_libraries(rexcore PRIVATE pthread)
++elseif(PS5)
++    # No librt or libdl: threads and timers come from the SDK's libc/libkernel.
+ elseif(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+@@ -133,5 +135,5 @@ endif()
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+     target_sources(rexcore PRIVATE perf/counter.cpp)
+     target_compile_definitions(rexcore PUBLIC
+-        $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++        REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+diff --git a/src/core/atomic_posix.cpp b/src/core/atomic_posix.cpp
+index 378aa4b..c28a596 100644
+--- a/src/core/atomic_posix.cpp
++++ b/src/core/atomic_posix.cpp
+@@ -1,7 +1,7 @@
+ #include <rex/platform.h>
+ #include <rex/thread/atomic.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ namespace rex::thread {
+ 
+diff --git a/src/core/clock_posix.cpp b/src/core/clock_posix.cpp
+index 00f2382..e2f0450 100644
+--- a/src/core/clock_posix.cpp
++++ b/src/core/clock_posix.cpp
+@@ -10,7 +10,7 @@
+ #include <rex/chrono/clock.h>
+ #include <rex/platform.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <sys/time.h>
+ 
+@@ -18,6 +18,12 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <mach/mach_time.h>
+ #endif
+ 
++// FreeBSD-derived libc on PS5 has no CLOCK_MONOTONIC_RAW; CLOCK_MONOTONIC
++// measured 81 ns resolution on the console.
++#if REX_PLATFORM_PS5 && !defined(CLOCK_MONOTONIC_RAW)
++#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
++#endif
++
+ namespace rex::chrono {
+ 
+ uint64_t Clock::host_tick_frequency_platform() {
+diff --git a/src/core/dynlib_posix.cpp b/src/core/dynlib_posix.cpp
+index fcfd6c9..7ac7790 100644
+--- a/src/core/dynlib_posix.cpp
++++ b/src/core/dynlib_posix.cpp
+@@ -1,7 +1,7 @@
+ #include <rex/platform.h>
+ #include <rex/platform/dynlib.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <dlfcn.h>
+ 
+diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
+index ef5bdf4..540fc57 100644
+--- a/src/core/filesystem_posix.cpp
++++ b/src/core/filesystem_posix.cpp
+@@ -37,7 +37,7 @@
+ 
+ // macOS off_t is 64-bit with no *64 large-file variants; Linux keeps the
+ // explicit *64 forms for legacy 32-bit off_t distributions.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+ using rex_off64_t = off_t;
+ #define rex_fseeko64 fseeko
+ #define rex_ftello64 ftello
+diff --git a/src/core/mapped_memory_posix.cpp b/src/core/mapped_memory_posix.cpp
+index 8ee8e34..74bdb2c 100644
+--- a/src/core/mapped_memory_posix.cpp
++++ b/src/core/mapped_memory_posix.cpp
+@@ -23,7 +23,7 @@
+ // macOS off_t is 64-bit and provides no *64 large-file variants; the base
+ // names already are the large-file interfaces. Linux still ships legacy 32-bit
+ // off_t on some distributions, so keep the explicit *64 forms there.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+ using rex_stat64_t = struct stat;
+ using rex_off64_t = off_t;
+ #define rex_fstat64 fstat
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index b52bf39..fa76f85 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -37,7 +37,7 @@
+ 
+ // macOS off_t is 64-bit with no *64 large-file variants; Linux keeps the
+ // explicit *64 forms for legacy 32-bit off_t distributions.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+ #define rex_mmap64 mmap
+ #define rex_ftruncate64 ftruncate
+ #else
+@@ -262,7 +262,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+     // range uses mprotect to avoid clobbering the existing reservation. Do not
+     // widen sub-host-page requests here - higher-level guest heaps must reconcile
+     // all guest permissions sharing a host page first.
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+   if (base_address != nullptr && allocation_type == AllocationType::kCommit) {
+     const size_t host_page = page_size();
+     const uintptr_t address = reinterpret_cast<uintptr_t>(base_address);
+@@ -284,7 +284,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+   if (base_address) {
+     flags |= MAP_FIXED;
+   }
+-#elif defined(MAP_FIXED_NOREPLACE)
++#elif defined(MAP_FIXED_NOREPLACE) && !REX_PLATFORM_PS5
+   if (base_address) {
+     flags |= MAP_FIXED_NOREPLACE;
+   }
+@@ -473,6 +473,18 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+       return kFileMappingHandleInvalid;
+   }
+   oflag |= O_CREAT;
++#if REX_PLATFORM_PS5
++  (void)path;
++  int ret = shm_open(SHM_ANON, oflag, 0600);
++  if (ret < 0) {
++    return kFileMappingHandleInvalid;
++  }
++  if (rex_ftruncate64(ret, static_cast<off_t>(length)) != 0) {
++    close(ret);
++    return kFileMappingHandleInvalid;
++  }
++  return static_cast<FileMappingHandle>(ret);
++#else
+   auto full_path = MakeShmName(path);
+   int ret = shm_open(full_path.c_str(), oflag, 0777);
+   if (ret < 0) {
+@@ -484,12 +496,13 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+     return kFileMappingHandleInvalid;
+   }
+   return static_cast<FileMappingHandle>(ret);
++#endif  // REX_PLATFORM_PS5
+ #endif
+ }
+ 
+ void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
+   close(static_cast<int>(handle));
+-#if !REX_PLATFORM_ANDROID
++#if !REX_PLATFORM_ANDROID && !REX_PLATFORM_PS5
+   auto full_path = MakeShmName(path);
+   shm_unlink(full_path.c_str());
+ #endif
+diff --git a/src/core/perf/counter.cpp b/src/core/perf/counter.cpp
+index 536009e..09de75c 100644
+--- a/src/core/perf/counter.cpp
++++ b/src/core/perf/counter.cpp
+@@ -154,6 +154,16 @@ void SetCsvLogPath(const std::string& path) {
+ }
+ 
+ void WriteCsvFrame() {
++  // Frames are flipped inside the GPU plugin, which carries its own copy of
++  // this state, so a path set by the host never arrives here. An environment
++  // variable reaches every module.
++  static bool env_checked = false;
++  if (!g_csv_file && !env_checked) {
++    env_checked = true;
++    if (const char* env_path = std::getenv("REX_PERF_LOG_CSV"); env_path && *env_path) {
++      SetCsvLogPath(env_path);
++    }
++  }
+   if (!g_csv_file)
+     return;
+ 
+diff --git a/src/core/platform/console_posix.cpp b/src/core/platform/console_posix.cpp
+index 669842b..4f2ace5 100644
+--- a/src/core/platform/console_posix.cpp
++++ b/src/core/platform/console_posix.cpp
+@@ -12,7 +12,7 @@
+ #include <rex/platform.h>
+ #include <rex/platform/console.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <unistd.h>
+ 
+diff --git a/src/core/platform/env_posix.cpp b/src/core/platform/env_posix.cpp
+index fb794b2..7483b43 100644
+--- a/src/core/platform/env_posix.cpp
++++ b/src/core/platform/env_posix.cpp
+@@ -12,7 +12,7 @@
+ #include <rex/platform.h>
+ #include <rex/platform/env.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <cstdlib>
+ #include <string>
+diff --git a/src/core/seh_posix.cpp b/src/core/seh_posix.cpp
+index 5e0a932..cbec078 100644
+--- a/src/core/seh_posix.cpp
++++ b/src/core/seh_posix.cpp
+@@ -9,7 +9,7 @@
+ #include <rex/platform.h>
+ #include <rex/platform/seh.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <signal.h>
+ #include <cstdlib>  // std::abort()
+diff --git a/src/core/socket_posix.cpp b/src/core/socket_posix.cpp
+index b4b885a..19ace70 100644
+--- a/src/core/socket_posix.cpp
++++ b/src/core/socket_posix.cpp
+@@ -1,7 +1,7 @@
+ #include <rex/net/socket.h>
+ #include <rex/platform.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 9ac8d15..80a7e43 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -9,7 +9,7 @@
+ #include <rex/platform.h>
+ #include <rex/thread.h>
+ 
+-static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
++static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5, "This file is POSIX-only");
+ 
+ #include <signal.h>
+ 
+@@ -23,6 +23,9 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <memory>
+ 
+ #include <pthread.h>
++#if REX_PLATFORM_PS5
++#include <pthread_np.h>
++#endif
+ #include <semaphore.h>
+ 
+ #if defined(__APPLE__)
+@@ -115,7 +118,7 @@ enum class SignalType {
+ };
+ 
+ int GetSystemSignal(SignalType num) {
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+   // macOS has no realtime signals (SIGRTMIN..SIGRTMAX); map the runtime's
+   // signals onto the two user-defined signals.
+   switch (num) {
+@@ -135,7 +138,7 @@ int GetSystemSignal(SignalType num) {
+ }
+ 
+ SignalType GetSystemSignalType(int num) {
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+   switch (num) {
+     case SIGUSR1:
+       return SignalType::kThreadSuspend;
+@@ -178,6 +181,8 @@ void EnableAffinityConfiguration() {}
+ uint32_t current_thread_system_id() {
+ #if defined(__APPLE__)
+   return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
++#elif REX_PLATFORM_PS5
++  return static_cast<uint32_t>(pthread_getthreadid_np());
+ #else
+   return static_cast<uint32_t>(syscall(SYS_gettid));
+ #endif
+@@ -718,6 +723,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
+         std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
+         rex::string::copy_truncating(result.data(), android_pre_api_26_name_, result.size());
+       }
++#elif REX_PLATFORM_PS5
++      // No portable name query on this libc; names are write-only here.
+ #else
+       if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
+         assert_always();
+@@ -736,6 +743,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       if (pthread_equal(thread_, pthread_self())) {
+         pthread_setname_np(std::string(name).c_str());
+       }
++#elif REX_PLATFORM_PS5
++      pthread_set_name_np(thread_, std::string(name).c_str());
+ #else
+       pthread_setname_np(thread_, std::string(name).c_str());
+ #endif
+@@ -758,13 +767,18 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+ #if defined(__APPLE__)
+   uint32_t system_id() const { return static_cast<uint32_t>(pthread_mach_thread_np(thread_)); }
++#elif REX_PLATFORM_PS5
++  // pthread_t is a pointer on this libc.
++  uint32_t system_id() const { return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thread_)); }
+ #else
+   uint32_t system_id() const { return static_cast<uint32_t>(thread_); }
+ #endif
+ 
+   uint64_t affinity_mask() {
+     WaitStarted();
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
++    // PS5: affinity is left to the system for now (FreeBSD's cpuset_t API
++    // differs from Linux's); report every logical processor.
+     // macOS doesn't expose Linux-style pthread affinity masks; report every
+     // logical processor as available.
+     auto cpu_count = std::min<uint32_t>(logical_processor_count(), 64);
+@@ -795,7 +809,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+   void set_affinity_mask(uint64_t mask) {
+     WaitStarted();
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+     // macOS doesn't expose Linux-style pthread affinity masks; keep this a
+     // no-op so higher layers can build and run.
+     (void)mask;
+@@ -868,7 +882,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       return;
+     }
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || REX_PLATFORM_PS5
+     // macOS has no sigqueue/pthread_sigqueue; pthread_kill delivers the signal
+     // without the sigval payload.
+     int result = pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
+@@ -1511,6 +1525,8 @@ void Thread::Exit(int exit_code) {
+ void set_current_thread_name(const std::string_view name) {
+ #if defined(__APPLE__)
+   pthread_setname_np(std::string(name).c_str());
++#elif REX_PLATFORM_PS5
++  pthread_set_name_np(pthread_self(), std::string(name).c_str());
+ #else
+   pthread_setname_np(pthread_self(), std::string(name).c_str());
+ #endif
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 0d8f8af..6978e3f 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -96,7 +96,12 @@ if(REXGLUE_USE_D3D12)
+         ${REXGPU_XENOS_D3D12_SOURCES})
+ endif()
+ 
+-add_library(rexgpu-xenos SHARED ${REXGPU_XENOS_SOURCES})
++# On PS5 the GPU implementation is linked in, not loaded as a plugin.
++if(PS5)
++    add_library(rexgpu-xenos STATIC ${REXGPU_XENOS_SOURCES})
++else()
++    add_library(rexgpu-xenos SHARED ${REXGPU_XENOS_SOURCES})
++endif()
+ add_library(rex::gpu-xenos ALIAS rexgpu-xenos)
+ 
+ set_target_properties(rexgpu-xenos PROPERTIES
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..8e864f7 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -355,9 +355,13 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+ 
+   // Volatile for the WAIT_REG_MEM loop.
+   const_cast<volatile uint32_t&>(regs.values[index]) = value;
++#ifndef NDEBUG
++  // Diagnostic only. The lookup is a large switch and this runs for every
++  // register write; it showed up as 8.7% of the GPU command thread.
+   if (!regs.GetRegisterInfo(index)) {
+     REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
+   }
++#endif
+ 
+   // Scratch register writeback.
+   if (index >= XE_GPU_REG_SCRATCH_REG0 && index <= XE_GPU_REG_SCRATCH_REG7) {
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..a9ea8e2 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -162,9 +162,19 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+           uint64_t interval_ticks =
+               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+-          while (current_time - last_frame_time >= interval_ticks) {
++          // The guest tick count can step backwards when clock scaling re-bases,
++          // which made the unsigned difference wrap and this loop fire vblanks
++          // without end. Resync instead, and never replay more than a quarter
++          // second of missed vblanks.
++          int64_t behind = int64_t(current_time - last_frame_time);
++          if (behind < 0 || uint64_t(behind) > guest_tick_frequency / 4) {
++            last_frame_time = current_time;
++            behind = 0;
++          }
++          while (uint64_t(behind) >= interval_ticks) {
+             MarkVblank();
+             last_frame_time += interval_ticks;
++            behind -= int64_t(interval_ticks);
+           }
+           rex::thread::Sleep(std::chrono::milliseconds(1));
+         }
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index 58e36a4..8951295 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -37,7 +37,7 @@
+ // NOTE: must be included last as it expects windows.h to already be included.
+ #define _WINSOCK_DEPRECATED_NO_WARNINGS  // inet_addr
+ #include <winsock2.h>                    // NOLINT(build/include_order)
+-#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC || REX_PLATFORM_PS5
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+ #include <netinet/ip.h>
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index fc46d86..5f57565 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -48,7 +48,13 @@ set(REXSYSTEM_SOURCES
+     xex_module.cpp
+ )
+ 
+-add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
++# PS5 titles are one static executable; there is nothing to load a shared
++# runtime from.
++if(PS5)
++    add_library(rexruntime STATIC ${REXSYSTEM_SOURCES})
++else()
++    add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
++endif()
+ add_library(rex::runtime ALIAS rexruntime)
+ add_library(rex::system ALIAS rexruntime)
+ add_library(rex::kernel ALIAS rexruntime)
+@@ -102,7 +108,7 @@ endif()
+ 
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+     target_compile_definitions(rexruntime PUBLIC
+-        $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++        REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ if(WIN32)
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..8a8f975 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -20,6 +20,11 @@
+ #include <fmt/format.h>
+ 
+ #include <rex/assert.h>
++#include <rex/platform.h>
++#if REX_PLATFORM_PS5
++#include <sys/mman.h>
++#include <cerrno>
++#endif
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+@@ -148,8 +153,8 @@ bool Memory::Initialize() {
+     return false;
+   }
+ 
+-#if REX_PLATFORM_MAC
+-  // On macOS, reserve a contiguous host range first, then carve guest views
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
++  // On macOS and PS5, reserve a contiguous host range first, then carve guest views
+   // into it with MAP_SHARED|MAP_FIXED so all views share the same backing fd.
+   if (MapViewsMac()) {
+     REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
+@@ -312,7 +317,7 @@ static const struct {
+         0x0000000100000000ull,
+     },
+ };
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_PS5
+ int Memory::MapViewsMac() {
+   assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
+ 
+@@ -323,7 +328,16 @@ int Memory::MapViewsMac() {
+       static_cast<size_t>(map_info[rex::countof(map_info) - 1].virtual_address_end -
+                           map_info[0].virtual_address_start + 1);
+ 
++#if REX_PLATFORM_PS5
++  // The kernel refuses an anonymous reservation this large (ENOMEM above about
++  // 2 GiB, measured on firmware 13.42), but maps the shared object itself
++  // without committing it. The base must also be the kernel's choice: the
++  // executable is loaded at 0x200000000, inside the range the other
++  // platforms probe for.
++  void* reserved_base = mmap(nullptr, total_size, PROT_NONE, MAP_SHARED, mapping_, 0);
++#else
+   void* reserved_base = mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++#endif
+   if (reserved_base == MAP_FAILED) {
+     REXSYS_ERROR("MapViewsMac: reserve failed: {}", std::strerror(errno));
+     return 1;
+@@ -356,7 +370,7 @@ int Memory::MapViewsMac() {
+ 
+   return 0;
+ }
+-#endif  // REX_PLATFORM_MAC
++#endif  // REX_PLATFORM_MAC || REX_PLATFORM_PS5
+ 
+ int Memory::MapViews(uint8_t* mapping_base) {
+   assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..5e450f4 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -72,6 +72,9 @@ elseif(APPLE)
+     set(REXUI_PLATFORM_SOURCES
+         surface_mac.cpp
+     )
++elseif(PS5)
++    # No window system surface; presentation is VK_KHR_display.
++    set(REXUI_PLATFORM_SOURCES)
+ else()
+     set(REXUI_PLATFORM_SOURCES
+         surface_gnulinux.cpp
+@@ -146,7 +149,9 @@ if(REXGLUE_USE_VULKAN)
+ endif()
+ 
+ # Platform-specific dependencies
+-if(UNIX AND NOT APPLE)
++# PS5 has no X11 or Wayland; presentation goes through the Vulkan driver's
++# VK_KHR_display on VideoOut.
++if(UNIX AND NOT APPLE AND NOT PS5)
+     find_package(PkgConfig REQUIRED)
+     pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+     # Required, not optional: vulkan/api.h pulls in <wayland-client.h> on every
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index 2251429..0b2d999 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -35,6 +35,8 @@
+ #include <SDL3/SDL_metal.h>
+ 
+ #include <rex/ui/surface_mac.h>
++#elif REX_PLATFORM_PS5
++// No window system. The Vulkan backend presents through VK_KHR_display.
+ #else
+ #include <X11/Xlib-xcb.h>
+ #include <rex/ui/surface_gnulinux.h>
+@@ -398,6 +400,8 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+       SDL_Metal_DestroyView(metal_view);
+     }
+   }
++#elif REX_PLATFORM_PS5
++  (void)allowed_types;
+ #else
+   SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
+   if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
