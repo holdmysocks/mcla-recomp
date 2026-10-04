@@ -41,6 +41,10 @@
 #include <signal.h>
 #include <ucontext.h>
 
+// As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC;
+// as a payload this does nothing and standard output is the loader socket.
+#include "title_log.h"
+
 // --- Early crash reporter -------------------------------------------------------
 //
 // Step 5 as first built printed nothing at all: the process died while the
@@ -98,6 +102,7 @@ void EarlyCrash(int signal_number, siginfo_t* info, void* context) {
 }
 
 __attribute__((constructor(101))) void InstallEarlyCrashReporter() {
+  MclaTitleLogConnect();
   EarlyWrite("early constructor: installing the crash reporter\n");
   struct sigaction action;
   std::memset(&action, 0, sizeof action);

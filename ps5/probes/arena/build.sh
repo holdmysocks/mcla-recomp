@@ -7,6 +7,10 @@
 # Touches no console; sending a payload is a separate, deliberate action.
 #
 # Usage: build.sh [steps...]   (default: 1 2 3 4 5 6 7)
+#
+# With TITLE=<TITLEID> set, each step is built as an installable title instead
+# (ps5/title_build.sh), with the log sent over TCP (ps5/title_log.h). The title
+# id is reused for every step, so build one step at a time.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 driver=${PS5_VULKAN:-/root/ps5vk/PS5_Vulkan}
@@ -17,6 +21,7 @@ libs="$runtime_src/out/ps5-amd64"
 work=/root/ps5vk/mcla-arena
 mkdir -p "$work"
 tr -d '\r' < "$here/main.cpp" > "$work/main.cpp"
+tr -d '\r' < "$here/../../title_log.h" > "$work/title_log.h"
 
 # Compile with exactly the flags the runtime's own sources were built with.
 ninja -C "$runtime_build" -t commands rexruntime > "$work/commands.txt"
@@ -40,7 +45,13 @@ sed -E 's/\*\(\.text \.text\.\*\)/*(.text .text.* .ltext .ltext.* __lcxx_overrid
 
 steps=("$@"); [ ${#steps[@]} -gt 0 ] || steps=(1 2 3 4 5 6 7)
 for step in "${steps[@]}"; do
-    ( cd "$runtime_build" && eval "\"$sdk/bin/prospero-clang++\" $flags -DMCLA_STEP=$step -o \"$work/step$step.o\" -c \"$work/main.cpp\"" )
+    if [ -n "${TITLE:-}" ]; then
+        ( cd "$runtime_build" && eval "\"$sdk/bin/prospero-clang++\" $flags -I\"$work\" -DMCLA_TITLE -DMCLA_STEP=$step -o \"$work/title-step$step.o\" -c \"$work/main.cpp\"" )
+        bash "$here/../../title_build.sh" "$TITLE" "MCLA Step $step" "$work/title-step$step.o" \
+            --start-group $(ls "$libs"/*.a | tr '\n' ' ') "$sdk/target/lib/libc++experimental.a" --end-group
+        continue
+    fi
+    ( cd "$runtime_build" && eval "\"$sdk/bin/prospero-clang++\" $flags -I\"$work\" -DMCLA_STEP=$step -o \"$work/step$step.o\" -c \"$work/main.cpp\"" )
     # A plain payload link: the SDK's own startup code and libraries, and the
     # runtime's static libraries as one group because they reference each other.
     # nodynamic-undefined-weak: the C++ runtime weakly references

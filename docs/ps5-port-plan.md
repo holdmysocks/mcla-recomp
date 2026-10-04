@@ -125,6 +125,14 @@ What differs from the probes, and is therefore suspect, in no established order:
 | Running as a title, not a payload | Different process setup; the 0x30 context shift was measured in a payload only |
 | The Vulkan driver archive is linked whole into the title | Not initialised by the test, but its static constructors run |
 
+### What the crashed title actually was (found 2026-10-03, at the start of P5)
+
+The crashed title's linked ELF was still on the build host (`build/mcla-arena/llvm-pie.elf`). Its layout has the same fault as the first payloads: the driver project's linker script (`tooling/native/ps5-pie.ld`) names only `.text`, so `main` and all 2,835 `.ltext.*` sections of the runtime were placed at 0x17E7190 and up, inside the read/write segment (0x16D4000 to 0x18F3542), which is not executable.
+
+So that title cannot have run any of its tests. It would have faulted on the first call from the startup code into `main`, which is consistent with there being no log at all. The suspects in the table above (fixed views, reserve and release, the context write-back, the driver's constructors) were never reached, and each has since passed as a payload.
+
+Why an immediate fault in a title took the whole console down, rather than just ending the title, is **not** known. A title built with the corrected script (`ps5/title_build.sh`, which also fails the build if any executable section is outside `.text`) has not yet been run.
+
 Rules adopted for further console runs:
 
 1. Every log line leaves the console over the network before the step it describes runs. No reliance on files on the console.
