@@ -35,6 +35,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstdint>
@@ -45,6 +46,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/input/device_assignment.h>
@@ -64,6 +66,9 @@
 #include <rex/thread.h>
 
 #include <pthread.h>
+
+// FreeBSD's thread id call; its header is not in every SDK.
+extern "C" int pthread_getthreadid_np(void);
 
 // As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC; as
 // a payload g_mcla_log_fd is standard output, the loader socket.
@@ -186,10 +191,46 @@ __attribute__((constructor(101))) void InstallEarlyCrashReporter() {
 
 constexpr int kDumpSignal = SIGXCPU;
 
+// Set while the sampling profiler runs: the handler then writes one compact
+// line per sample instead of the readable dump.
+std::atomic<bool> g_profile_sampling{false};
+
+size_t AppendHex(char* buffer, size_t n, uint64_t value) {
+  static const char digits[] = "0123456789abcdef";
+  int shift = 60;
+  while (shift > 0 && ((value >> shift) & 0xF) == 0) shift -= 4;
+  for (; shift >= 0; shift -= 4) buffer[n++] = digits[(value >> shift) & 0xF];
+  return n;
+}
+
 void DumpHandler(int, siginfo_t*, void* context) {
   auto* machine = reinterpret_cast<mcontext_t*>(static_cast<uint8_t*>(context) + 0x40);
   const uint64_t anchor = reinterpret_cast<uint64_t>(&EarlyAnchor);
   const uint64_t low = anchor > 0x20000000 ? anchor - 0x20000000 : 0x1000;
+  if (g_profile_sampling.load(std::memory_order_relaxed)) {
+    // "S <thread> <pc> <code address on the stack> ..." in one write.
+    char line[256];
+    size_t n = 0;
+    line[n++] = 'S';
+    line[n++] = ' ';
+    n = AppendHex(line, n, static_cast<uint64_t>(pthread_getthreadid_np()));
+    line[n++] = ' ';
+    n = AppendHex(line, n, static_cast<uint64_t>(machine->mc_rip));
+    const uint64_t* words = reinterpret_cast<const uint64_t*>(machine->mc_rsp);
+    int found = 0;
+    for (int i = 0; i < 512 && found < 8; ++i) {
+      const uint64_t word = words[i];
+      if (word > low && word < anchor + 0x20000000) {
+        line[n++] = ' ';
+        n = AppendHex(line, n, word);
+        ++found;
+      }
+    }
+    line[n++] = '\n';
+    (void)!write(g_mcla_log_fd, line, n);
+    return;
+  }
+  EarlyHex("  tid ", static_cast<uint64_t>(pthread_getthreadid_np()));
   EarlyHex("  pc ", static_cast<uint64_t>(machine->mc_rip));
   const uint64_t* stack = reinterpret_cast<const uint64_t*>(machine->mc_rsp);
   int printed = 0;
@@ -225,6 +266,32 @@ void DumpRuntimeThreads(rex::system::KernelState* kernel_state) {
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
   }
   Line("THREAD DUMP ends");
+}
+
+// A sampling profiler out of the same signal: every runtime thread, `hertz`
+// times a second for `seconds`, one line per sample. ps5/profile_report.py
+// turns the lines into per-thread function counts on the PC.
+void ProfileRuntimeThreads(rex::system::KernelState* kernel_state, int seconds, int hertz) {
+  Line("PROFILE begins: %d s at %d Hz, code anchor %p", seconds, hertz,
+       reinterpret_cast<void*>(&EarlyAnchor));
+  g_profile_sampling.store(true);
+  const auto period = std::chrono::microseconds(1000000 / hertz);
+  for (int sample = 0; sample < seconds * hertz; ++sample) {
+    // Re-read the list now and then: the game creates and ends threads.
+    static std::vector<rex::system::object_ref<rex::system::XThread>> threads;
+    if (sample % hertz == 0) {
+      threads = kernel_state->object_table()->GetObjectsByType<rex::system::XThread>();
+    }
+    for (auto& thread : threads) {
+      if (thread && thread->thread()) {
+        pthread_kill(reinterpret_cast<pthread_t>(thread->thread()->native_handle()), kDumpSignal);
+      }
+    }
+    std::this_thread::sleep_for(period);
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  g_profile_sampling.store(false);
+  Line("PROFILE ends");
 }
 
 void Line(const char* format, ...) {
@@ -383,6 +450,19 @@ int main() {
   // found", which std::filesystem::exists turns into an exception nobody
   // catches. There is no such file here; do not look.
   rex::cvar::SetFlagByName("hid_mappings_file", "");
+  // Pacing is the frame limiter's job, as on the desktop (MclaApp::
+  // ConfigureFrameTiming): with the emulated console vsync also on, a frame
+  // that misses a display interval waits for the next one.
+  rex::cvar::SetFlagByName("vsync", "false");
+  // A protection change costs 26 us on the console whatever its size (arena
+  // step 13), and the GPU emulation was spending a quarter of its thread on
+  // them: watch guest physical memory in 64 KiB units, not 16 KiB host pages.
+#ifndef MCLA_WATCH_GRANULARITY
+#define MCLA_WATCH_GRANULARITY 65536
+#endif
+#define MCLA_STRINGIZE_(x) #x
+#define MCLA_STRINGIZE(x) MCLA_STRINGIZE_(x)
+  rex::cvar::SetFlagByName("physical_watch_granularity", MCLA_STRINGIZE(MCLA_WATCH_GRANULARITY));
   rex::ui::SDLWindowedAppContext app_context;
   if (!app_context.Initialize()) {
     return Finish("the SDL application context did not initialise", 9);
@@ -513,6 +593,7 @@ int main() {
   // The message loop needs this thread; a second one reports and ends the run.
   InstallDumpHandler();
   std::thread ticker([&app_context, &runtime]() {
+    int next_profile_second = 15;
     for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
       if (second <= 30 || second % 30 == 0) Line("alive: %d s", second);
@@ -521,6 +602,26 @@ int main() {
       if (second == 4 || second == 8) {
         DumpRuntimeThreads(runtime->kernel_state());
       }
+#ifdef MCLA_TITLE
+      // A profile on request from the controller (L3 + R3 + touchpad), at most
+      // one every 40 s: whoever is playing picks the moment.
+      if (second >= next_profile_second &&
+          g_mcla_profile_request.exchange(false, std::memory_order_relaxed)) {
+        Line("PROFILE requested from the controller at %d s", second);
+        DumpRuntimeThreads(runtime->kernel_state());
+        ProfileRuntimeThreads(runtime->kernel_state(), 20, 25);
+        next_profile_second = second + 40;
+        g_mcla_profile_request.store(false, std::memory_order_relaxed);
+      }
+#endif
+#ifdef MCLA_PROFILE_AT
+      // One profile while the game is being played (the time is chosen at
+      // build time and told to whoever holds the controller).
+      if (second == MCLA_PROFILE_AT) {
+        DumpRuntimeThreads(runtime->kernel_state());
+        ProfileRuntimeThreads(runtime->kernel_state(), 20, 25);
+      }
+#endif
     }
     Finish("run time reached", 0);
   });

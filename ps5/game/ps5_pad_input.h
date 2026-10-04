@@ -16,6 +16,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -38,6 +39,10 @@ int scePadGetHandle(int user_id, int type, int index);
 int scePadReadState(int handle, void* data);
 int scePadSetVibration(int handle, const void* param);
 }
+
+// Set when L3, R3 and the touchpad are all held: the host takes a sampling
+// profile of the game as it is at that moment (ps5/profile_report.py).
+inline std::atomic<bool> g_mcla_profile_request{false};
 
 class Ps5PadInputDriver final : public rex::input::InputDriver {
  public:
@@ -117,6 +122,10 @@ class Ps5PadInputDriver final : public rex::input::InputDriver {
     std::memcpy(&pad_buttons, data, sizeof pad_buttons);
     const uint8_t left_x = data[4], left_y = data[5], right_x = data[6], right_y = data[7];
     const uint8_t l2 = data[8], r2 = data[9];
+
+    if ((pad_buttons & 0x00100006) == 0x00100006) {
+      g_mcla_profile_request.store(true, std::memory_order_relaxed);
+    }
 
     uint16_t buttons = 0;
     const auto map = [&](uint32_t pad_bit, uint16_t xinput_bit) {

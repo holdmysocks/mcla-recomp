@@ -9,6 +9,9 @@
 #
 # Usage: build.sh [stage ...]     (default: 4)  -> $work/mcla-stage<N>.elf
 # Environment: MCLA_RUN_SECONDS, MCLA_LOG_LEVEL, JOBS
+#   MCLA_PROFILE_AT=<second>  take a 20 s sampling profile from that second
+#   MCLA_TITLE_NAME=<name>  the name shown on the console (default "MCLA Stage <N>")
+#   ART_DIR=<folder>  tile and backgrounds for the title (see ps5/title_build.sh)
 #   TITLE=<TITLEID>  build an installable title instead (ps5/title_build.sh):
 #                    <driver>/dist/<TITLEID>, one stage at a time
 set -euo pipefail
@@ -107,11 +110,14 @@ stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(4)
 for stage in "${stages[@]}"; do
     extra="-DMCLA_STAGE=$stage"
     [ -z "${MCLA_RUN_SECONDS:-}" ] || extra="$extra -DMCLA_RUN_SECONDS=$MCLA_RUN_SECONDS"
+    # A 20 s sampling profile starting this many seconds into the run
+    # (ps5/profile_report.py reads it from the title log).
+    [ -z "${MCLA_PROFILE_AT:-}" ] || extra="$extra -DMCLA_PROFILE_AT=$MCLA_PROFILE_AT"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
     if [ -n "${TITLE:-}" ]; then
         # As an installable title, linked with the Vulkan driver, log over TCP.
         ( cd "$runtime_build" && eval "\"$cxx\" $flags $extra -DMCLA_TITLE -I\"$work/src/ps5\" -o \"$work/obj/title_stage$stage.o\" -c \"$work/src/ps5/main_ps5.cpp\"" )
-        bash "$here/../title_build.sh" "$TITLE" "MCLA Stage $stage" \
+        bash "$here/../title_build.sh" "$TITLE" "${MCLA_TITLE_NAME:-MCLA Stage $stage}" \
             "$work/obj/title_stage$stage.o" "$work"/obj/gen_*.o "$work"/obj/host_*.o \
             --start-group $(ls "$libs"/*.a | tr '\n' ' ') "$sdk/target/lib/libc++experimental.a" --end-group
         continue

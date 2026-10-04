@@ -128,6 +128,16 @@ cp "$work/param.json" "$app/sce_sys/param.json"
 for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
     [[ -f $root/sce_sys/$asset ]] && cp "$root/sce_sys/$asset" "$app/sce_sys/$asset"
 done
+# ART_DIR: the title's own tile and backgrounds in the console's formats
+# (icon0.png, pic0.dds, pic1.dds), as tools/prepare-assets.sh in the driver
+# project writes them. For the game they are made from the user's own copy by
+# ps5/make_title_art.py; nothing of the kind is in the repository. Without
+# ART_DIR a title keeps the driver project's default art, as the probes do.
+if [[ -n ${ART_DIR:-} ]]; then
+    for asset in icon0.png pic0.dds pic1.dds; do
+        [[ -f $ART_DIR/$asset ]] && cp "$ART_DIR/$asset" "$app/sce_sys/$asset"
+    done
+fi
 [[ -f $root/runtime/libc.prx ]] || bash "$root/tools/rebuild-libc.sh"
 (cd "$root/runtime" && sha256sum --check --strict --quiet libc.prx.sha256)
 cp "$root/runtime/libc.prx" "$app/sce_module/libc.prx"

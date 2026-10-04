@@ -1339,7 +1339,7 @@ index fc46d86..5f57565 100644
  
  if(WIN32)
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
-index 76cc877..48024c5 100644
+index 76cc877..e3408b8 100644
 --- a/src/system/xmemory.cpp
 +++ b/src/system/xmemory.cpp
 @@ -20,6 +20,11 @@
@@ -1354,7 +1354,20 @@ index 76cc877..48024c5 100644
  #include <rex/chrono/clock.h>
  #include <rex/cvar.h>
  #include <rex/logging.h>
-@@ -148,8 +153,8 @@ bool Memory::Initialize() {
+@@ -36,6 +41,12 @@
+ REXCVAR_DEFINE_BOOL(protect_zero, true, "Memory", "Protect the zero page from reads and writes")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++REXCVAR_DEFINE_UINT32(physical_watch_granularity, 0, "Memory",
++                      "Size in bytes of the unit in which writes to guest physical memory are "
++                      "watched (rounded up to a power of two no smaller than the host page); 0 "
++                      "uses the host page size. A larger unit means fewer protection changes "
++                      "and more memory treated as modified per write");
++
+ REXCVAR_DEFINE_BOOL(protect_on_release, false, "Memory",
+                     "Protect released memory to prevent accesses");
+ 
+@@ -148,8 +159,8 @@ bool Memory::Initialize() {
      return false;
    }
  
@@ -1365,7 +1378,7 @@ index 76cc877..48024c5 100644
    // into it with MAP_SHARED|MAP_FIXED so all views share the same backing fd.
    if (MapViewsMac()) {
      REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
-@@ -312,7 +317,7 @@ static const struct {
+@@ -312,7 +323,7 @@ static const struct {
          0x0000000100000000ull,
      },
  };
@@ -1374,7 +1387,7 @@ index 76cc877..48024c5 100644
  int Memory::MapViewsMac() {
    assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
  
-@@ -323,7 +328,18 @@ int Memory::MapViewsMac() {
+@@ -323,7 +334,18 @@ int Memory::MapViewsMac() {
        static_cast<size_t>(map_info[rex::countof(map_info) - 1].virtual_address_end -
                            map_info[0].virtual_address_start + 1);
  
@@ -1393,7 +1406,7 @@ index 76cc877..48024c5 100644
    if (reserved_base == MAP_FAILED) {
      REXSYS_ERROR("MapViewsMac: reserve failed: {}", std::strerror(errno));
      return 1;
-@@ -337,15 +353,27 @@ int Memory::MapViewsMac() {
+@@ -337,15 +359,27 @@ int Memory::MapViewsMac() {
                                             map_info[n].virtual_address_start + 1);
      size_t file_offset = static_cast<size_t>(map_info[n].target_address & granularity_mask);
      void* target_address = mapping_base + map_info[n].virtual_address_start;
@@ -1421,7 +1434,7 @@ index 76cc877..48024c5 100644
        for (auto& view : views_.all_views) {
          view = nullptr;
        }
-@@ -356,7 +384,7 @@ int Memory::MapViewsMac() {
+@@ -356,7 +390,7 @@ int Memory::MapViewsMac() {
  
    return 0;
  }
@@ -1430,6 +1443,45 @@ index 76cc877..48024c5 100644
  
  int Memory::MapViews(uint8_t* mapping_base) {
    assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
+@@ -1883,6 +1917,16 @@ void PhysicalHeap::Initialize(memory::Memory* memory, uint8_t* membase, HeapType
+                        host_address_offset);
+   parent_heap_ = parent_heap;
+   system_page_size_ = uint32_t(rex::memory::page_size());
++  // Where a protection change is expensive whatever its size (26 us a call on
++  // PS5, measured, against well under 1 us on a desktop), the number of calls
++  // is what matters, and watching in larger units is how to have fewer.
++  const uint32_t requested_watch_unit = REXCVAR_GET(physical_watch_granularity);
++  while (system_page_size_ < requested_watch_unit && system_page_size_ < 0x1000000) {
++    system_page_size_ <<= 1;
++  }
++  if (heap_base == 0xA0000000) {
++    REXSYS_INFO("Physical memory write-watch unit: {} bytes", system_page_size_);
++  }
+ 
+   system_page_count_ =
+       (size_t(heap_size_) + host_address_offset + (system_page_size_ - 1)) / system_page_size_;
+@@ -2338,13 +2382,16 @@ std::unique_lock<std::recursive_mutex> PhysicalHeap::AcquireHostPageReconcileLoc
+ }
+ 
+ bool PhysicalHeap::IsHostPageWriteWatched(uint32_t host_page_number) const {
+-  // Indices match EnableAccessCallbacks: both count host pages from
+-  // membase_ + heap_base_, including host_address_offset().
+-  if (host_page_number >= system_page_count_) {
++  // Callers count host pages from membase_ + heap_base_, including
++  // host_address_offset(), as EnableAccessCallbacks does; the watch unit may
++  // be several host pages (physical_watch_granularity).
++  const uint64_t watch_page_number =
++      uint64_t(host_page_number) * memory_->system_page_size_ / system_page_size_;
++  if (watch_page_number >= system_page_count_) {
+     return false;
+   }
+-  return (system_page_flags_[host_page_number >> 6].notify_on_invalidation &
+-          (uint64_t(1) << (host_page_number & 63))) != 0;
++  return (system_page_flags_[watch_page_number >> 6].notify_on_invalidation &
++          (uint64_t(1) << (watch_page_number & 63))) != 0;
+ }
+ 
+ uint32_t PhysicalHeap::GetPhysicalAddress(uint32_t address) const {
 diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
 index 5bd3dc5..5e450f4 100644
 --- a/src/ui/CMakeLists.txt

@@ -44,6 +44,15 @@
 //      sceKernelMprotect, to no access and to read-only: write a byte and
 //      see whether the runtime's handler was entered
 //
+//  13  title only: timings. The game's profile on the console showed the GPU
+//      command thread spending a quarter of its time in mprotect and the
+//      busy threads queueing on one recursive mutex. This measures both in
+//      isolation: lock and unlock, uncontended and with four threads; an
+//      mprotect toggle on anonymous memory, on a small direct-memory mapping
+//      and inside a 1 GiB direct-memory mapping before and after it has been
+//      cut into thousands of differently protected pieces; and a fault
+//      round trip through the runtime's handler
+//
 // 8 and 9 are for re-running as a title what has already passed step by step
 // as a payload.
 //
@@ -57,13 +66,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <time.h>
+#include <vector>
+#include <thread>
+#include <mutex>
 
 #include <rex/exception_handler.h>
 #include <rex/memory.h>
 #include <rex/system/xmemory.h>
 
 #ifndef MCLA_STEP
-#error "build with -DMCLA_STEP=0..12"
+#error "build with -DMCLA_STEP=0..13"
 #endif
 
 #include <signal.h>
@@ -790,10 +803,184 @@ void TestDirectMemoryProtection() {
 
 #endif  // MCLA_STEP == 12
 
+// --- Step 13: what locks, mprotect and faults cost in a title ------------------------
+
+#if MCLA_STEP == 13
+#ifndef MCLA_TITLE
+#error "step 13 is for a title (TITLE=<id>)"
+#endif
+
+extern "C" {
+int32_t sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end, size_t length,
+                                      size_t alignment, int memory_type, int64_t* physical_start);
+int32_t sceKernelReleaseDirectMemory(int64_t start, size_t length);
+int32_t sceKernelMapDirectMemory(void** address, size_t length, int protection, int flags,
+                                 int64_t direct_start, size_t alignment);
+int64_t sceKernelGetDirectMemorySize(void);
+int32_t sceKernelMprotect(const void* address, size_t length, int protection);
+int32_t sceKernelMunmap(void* address, size_t length);
+}
+
+double NowMicroseconds() {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return now.tv_sec * 1e6 + now.tv_nsec / 1e3;
+}
+
+template <typename Function>
+void Time(const char* what, int count, Function&& function) {
+  const double start = NowMicroseconds();
+  for (int i = 0; i < count; ++i) function(i);
+  const double total = NowMicroseconds() - start;
+  Line("TIME %-58s %9.3f us each (%d in %.1f ms)", what, total / count, count, total / 1000.0);
+}
+
+void* MapDirect(size_t length, int64_t* start_out) {
+  int64_t start = -1;
+  if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), length, 0x200000, 12,
+                                    &start) != 0) {
+    return nullptr;
+  }
+  void* view = nullptr;
+  if (sceKernelMapDirectMemory(&view, length, 3, 0, start, 0x200000) != 0) return nullptr;
+  *start_out = start;
+  return view;
+}
+
+void TestTimings() {
+  const size_t page = 0x4000;
+
+  NEXT("lock and unlock, one thread");
+  {
+    std::recursive_mutex recursive;
+    std::mutex plain;
+    volatile int sink = 0;
+    Time("std::recursive_mutex lock+unlock, uncontended", 1000000, [&](int) {
+      recursive.lock();
+      sink = sink + 1;
+      recursive.unlock();
+    });
+    Time("std::mutex lock+unlock, uncontended", 1000000, [&](int) {
+      plain.lock();
+      sink = sink + 1;
+      plain.unlock();
+    });
+  }
+
+  NEXT("lock and unlock, four threads on one recursive mutex");
+  {
+    std::recursive_mutex recursive;
+    volatile long shared = 0;
+    const int per_thread = 200000;
+    const double start = NowMicroseconds();
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 4; ++t) {
+      threads.emplace_back([&]() {
+        for (int i = 0; i < per_thread; ++i) {
+          recursive.lock();
+          shared = shared + 1;
+          recursive.unlock();
+        }
+      });
+    }
+    for (auto& thread : threads) thread.join();
+    const double total = NowMicroseconds() - start;
+    Line("TIME %-58s %9.3f us each (%d in %.1f ms)", "recursive_mutex lock+unlock, 4 threads contending",
+         total / (4.0 * per_thread), 4 * per_thread, total / 1000.0);
+    Check(shared == 4L * per_thread, "the contended counter is exact");
+  }
+
+  NEXT("mprotect on anonymous memory");
+  {
+    void* anonymous = mmap(nullptr, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (anonymous != MAP_FAILED) {
+      Time("mprotect toggle, anonymous 16 KiB", 4000, [&](int i) {
+        mprotect(anonymous, page, (i & 1) ? PROT_READ | PROT_WRITE : PROT_READ);
+      });
+      munmap(anonymous, 0x10000);
+    }
+  }
+
+  NEXT("mprotect on a small direct-memory mapping");
+  {
+    int64_t start = -1;
+    void* view = MapDirect(0x200000, &start);
+    Check(view != nullptr, "a 2 MiB direct-memory mapping");
+    if (view) {
+      Time("mprotect toggle, direct memory 16 KiB (2 MiB mapping)", 4000, [&](int i) {
+        mprotect(view, page, (i & 1) ? PROT_READ | PROT_WRITE : PROT_READ);
+      });
+      Time("sceKernelMprotect toggle, same page", 4000, [&](int i) {
+        sceKernelMprotect(view, page, (i & 1) ? 3 : 1);
+      });
+      sceKernelMunmap(view, 0x200000);
+      sceKernelReleaseDirectMemory(start, 0x200000);
+    }
+  }
+
+  NEXT("mprotect inside a 1 GiB direct-memory mapping, before and after fragmenting it");
+  {
+    const size_t length = 0x40000000;
+    int64_t start = -1;
+    void* view = MapDirect(length, &start);
+    Check(view != nullptr, "a 1 GiB direct-memory mapping");
+    if (view) {
+      auto* bytes = static_cast<uint8_t*>(view);
+      uint8_t* middle = bytes + length / 2;
+      Time("mprotect toggle, one page in the middle (unfragmented)", 4000, [&](int i) {
+        mprotect(middle, page, (i & 1) ? PROT_READ | PROT_WRITE : PROT_READ);
+      });
+      mprotect(middle, page, PROT_READ | PROT_WRITE);
+
+      // Every other page of the first 128 MiB read-only: 4096 protected pages,
+      // about 8192 pieces. This is what write-watching does to the arena.
+      const int pieces = 4096;
+      Time("mprotect, fragmenting: every other page read-only", pieces, [&](int i) {
+        mprotect(bytes + static_cast<size_t>(i) * 2 * page, page, PROT_READ);
+      });
+      Time("mprotect toggle, one page in the middle (fragmented)", 4000, [&](int i) {
+        mprotect(middle, page, (i & 1) ? PROT_READ | PROT_WRITE : PROT_READ);
+      });
+      Time("sceKernelMprotect toggle, same page (fragmented)", 4000, [&](int i) {
+        sceKernelMprotect(middle, page, (i & 1) ? 3 : 1);
+      });
+      Time("mprotect, 64 pages at once (fragmented)", 2000, [&](int i) {
+        mprotect(middle, 64 * page, (i & 1) ? PROT_READ | PROT_WRITE : PROT_READ);
+      });
+      mprotect(middle, 64 * page, PROT_READ | PROT_WRITE);
+
+      NEXT("fault round trip in the fragmented mapping, through the runtime's handler");
+      g_fault = FaultState();
+      g_fault.mode = FaultMode::kUnprotect;
+      g_fault.page = middle;
+      g_fault.page_size = page;
+      rex::arch::ExceptionHandler::Install(FaultHandler, nullptr);
+      const int faults = 500;
+      const double fault_start = NowMicroseconds();
+      for (int i = 0; i < faults; ++i) {
+        g_fault.count = 0;
+        mprotect(middle, page, PROT_READ);
+        StoreByte(middle + 0x10);
+      }
+      const double fault_total = NowMicroseconds() - fault_start;
+      rex::arch::ExceptionHandler::Uninstall(FaultHandler, nullptr);
+      Line("TIME %-58s %9.3f us each (%d in %.1f ms)",
+           "protect + faulting write + handler unprotect + retry", fault_total / faults, faults,
+           fault_total / 1000.0);
+
+      NEXT("unmap and release the 1 GiB");
+      sceKernelMunmap(view, length);
+      sceKernelReleaseDirectMemory(start, length);
+    }
+  }
+}
+
+#endif  // MCLA_STEP == 13
+
 }  // namespace
 
 int main() {
-  alarm(60);  // watchdog: the process ends by itself whatever happens
+  alarm(180);  // watchdog: the process ends by itself whatever happens
   Line("mcla-arena step %d starts, pid %d", MCLA_STEP, getpid());
   Line("host page size %zu", rex::memory::page_size());
 #ifdef MCLA_TITLE
@@ -842,6 +1029,8 @@ int main() {
   TestDirectMemory();
 #elif MCLA_STEP == 12
   TestDirectMemoryProtection();
+#elif MCLA_STEP == 13
+  TestTimings();
 #elif MCLA_STEP == 8
   TestFault(FaultMode::kUnprotect);
   TestFault(FaultMode::kSkip);
