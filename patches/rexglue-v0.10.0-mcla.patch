@@ -1998,7 +1998,7 @@ index ec0df7c..47926fb 100644
  
    return std::make_pair(page_first << page_size_log2_, (page_last - page_first + 1)
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..c3e3f92 100644
+index 001f36b..cd1e75f 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -9,6 +9,8 @@
@@ -2010,13 +2010,18 @@ index 001f36b..c3e3f92 100644
  #include <algorithm>
  #include <array>
  #include <cstdint>
-@@ -71,6 +73,20 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
+@@ -71,6 +73,25 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
  
  namespace rex::graphics::vulkan {
  
 +// Submissions and blocking fence waits so far, with the time spent in each
 +// (microseconds), for performance diagnosis: {submits, submit us, waits, wait us}.
 +std::atomic<uint64_t> g_submission_counters[4];
++// Draws issued so far.
++std::atomic<uint64_t> g_draw_counter{0};
++uint64_t DrawCounter() {
++  return g_draw_counter.load(std::memory_order_relaxed);
++}
 +void SubmissionCounters(uint64_t out[4]) {
 +  for (int i = 0; i < 4; ++i) {
 +    out[i] = g_submission_counters[i].load(std::memory_order_relaxed);
@@ -2031,7 +2036,15 @@ index 001f36b..c3e3f92 100644
  namespace {
  
  // glslang default built-in resource limits.
-@@ -4970,9 +4986,13 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -3590,6 +3611,7 @@ Shader* VulkanCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
+ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
+                                        IndexBufferInfo* index_buffer_info,
+                                        bool major_mode_explicit) {
++  g_draw_counter.fetch_add(1, std::memory_order_relaxed);
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+@@ -4970,9 +4992,13 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
      // defined by vkQueueSubmit additionally include in the first
      // synchronization scope all commands that occur earlier in submission
      // order."
@@ -2045,7 +2058,7 @@ index 001f36b..c3e3f92 100644
      if (wait_result == VK_SUCCESS) {
        fences_awaited += await_submission - submission_completed_;
      } else {
-@@ -5417,7 +5437,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5417,7 +5443,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      {
        ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
            vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0);

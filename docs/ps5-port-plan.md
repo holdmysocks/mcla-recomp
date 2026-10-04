@@ -244,6 +244,15 @@ Crash found on the way: `Call to invalid or unregistered function at guest addre
 
 Note: the installed `rexglue.exe` has the codegen templates built in, from before the PS5 rule was added to `pch_h.inja`, so each codegen on the PC rewrites `generated/default/mcla_pch.h` without `|| REX_PLATFORM_PS5`. `ps5/game/build.sh` refuses to build then; add it back by hand (or rebuild the SDK's tools).
 
+With pipelines stored (611 at start-up), a 490 s run had no crash and one sustained dip; the user confirms menus and loading are smoother and the race from the cutscene menu works. What is left is the zoomed-out map (opening the map, and the zoom-in after pressing start):
+
+| View | Draws issued per frame | Presents/s | Draws/s |
+|---|---|---|---|
+| Driving | 3,000-5,000 | 30 (capped) | 90,000-150,000 |
+| Map zoom | 12,000-14,500 | 14-18 | 210,000-230,000 |
+
+The GPU command thread tops out at about 220,000 issued draws a second (about 4.5 us each); the main guest thread is then about 61% in its GPU wait. Nothing dominates the thread: driver state emission about 11%, `UpdateBindings` and descriptor updates about 16%, register writes 8-11%, submission about 18% (`vkQueueSubmit` goes from 5 to about 180 ms per second). The driver is the release build, assertions off. The count is of `IssueDraw` calls, including any discarded early (loading screens show very high counts). The same ceiling is what a 60 target runs into (28-44 presents/s measured). `MCLA_PROFILE_DIPS_FROM` sets how soon after launch dip profiles may start.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.
