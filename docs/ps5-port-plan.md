@@ -17,7 +17,7 @@ The recompiled game code and `src/` are shared with PC unchanged. What changes i
 | P1 | Runtime builds for PS5 | Build log | **Done 2026-10-03.** `librexruntime.a` (22.9 MB) and `librexgpu-xenos.a` (7.7 MB) built with the runtime's own CMake: 184 steps, 0 failures. Not linked into a title yet |
 | P2 | Guest memory arena runs on the console using the runtime's own code | Title prints the arena base and passes view, alias and protection checks | Passes as a payload (steps 1 to 4); not run as a title |
 | P3 | Fault handler works on the console | Title takes a write-watch fault through the runtime's handler and resumes | Unprotect-and-retry passes as a payload (step 5); register-changing cases not run |
-| P4 | Runtime links for PS5 with the game code, no graphics | Link succeeds; title starts the guest entry point and logs kernel calls | **Links (2026-10-03):** 52 MB payload, all 311 imports resolve on the console. Not yet run |
+| P4 | Runtime links for PS5 with the game code, no graphics | Link succeeds; title starts the guest entry point and logs kernel calls | **Done 2026-10-03, as a payload.** Guest code runs on the console: kernel imports resolved, volume calls made, and the game reached video setup (`VdInitializeRingBuffer`), where it stalls for lack of a graphics system as expected. 20 s run, no crash |
 | P5 | Presentation: the Vulkan backend creates its device and swapchain | A frame is presented | Not started |
 | P6 | Boots to the title screen | Screenshot or user report | Not started |
 | P7 | Audio output and controller input | User report | Not started |
@@ -91,6 +91,17 @@ A constructor with priority 101 that installs a crash reporter (signal number, f
 - **Floating point.** The game code is built with `-ffp-contract=off`: the desktop build targets SSE4.1 and never fuses a multiply and an add, and with `-march=znver2` the compiler otherwise would.
 - **Fibers.** The runtime's fiber support had no PS5 source. `fiber_ps5.cpp` implements thread fibers only (every guest thread converts itself to one); `Create` and `SwitchTo` are not implemented, and nothing linked into this game references them.
 - **Not built for PS5:** `mcla_app.cpp`/`main.cpp` (the windowed host) and the development tools tied to it (code-pointer scan, crash trace, sampling profiler). Their settings (frame timing configuration, the `t:` link aside) are therefore at defaults.
+
+### Console runs (2026-10-03)
+
+| Stage | Result |
+|---|---|
+| 1 `Runtime::Setup` | Pass. Arena at 0x202E74000; function table for 82130000-827CD054 |
+| 2 `LoadXexImage` | Pass. Title id 545407F8 |
+| 3 `PrepareModuleLaunch` | Pass. The game does not use the runtime's guest heap |
+| 4 resume, 20 s | Pass. The main guest thread looked up the `XInputdFF*` exports (not implemented, same as on the desktop), called `IoDismountVolumeByFileHandle` twice, then `VdSetGraphicsInterruptCallback`, `VdInitializeRingBuffer` and `VdEnableRingBufferRPtrWriteBack`, each ignored because no GPU plugin is loaded. Nothing further was logged; the process stayed alive until the timer ended it |
+
+Game data was uploaded to `/data/mcla/game` over FTP (13 files, 6.2 GB, sizes verified). Not tested: anything past video setup, more than one guest thread doing real work, write-watch faults under load, running as a title.
 
 Checked before any console run: no executable section outside `.text`, no TLS segment (thread-locals use emulated TLS), and `symcheck` reports 0 of 311 imports missing on the console.
 
