@@ -74,6 +74,13 @@ extern "C" int pthread_getthreadid_np(void);
 namespace rex::arch {
 uint64_t Ps5FaultCount();
 }
+namespace rex::ui::vulkan {
+uint64_t Ps5PresentCount();
+}
+namespace rex::graphics {
+uint64_t SharedMemoryUploadedBytes();
+void SharedMemoryCounters(uint64_t out[10]);
+}
 
 // As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC; as
 // a payload g_mcla_log_fd is standard output, the loader socket.
@@ -642,6 +649,33 @@ int main() {
         Line("STATS %d s: %llu protection changes/s, %llu faults/s", second,
              static_cast<unsigned long long>((protects - last_protects) / 5),
              static_cast<unsigned long long>((faults - last_faults) / 5));
+#if MCLA_STAGE >= 7
+        static uint64_t last_presents = 0, last_uploaded = 0;
+        const uint64_t presents = rex::ui::vulkan::Ps5PresentCount();
+        const uint64_t uploaded = rex::graphics::SharedMemoryUploadedBytes();
+        Line("STATS %d s: %.1f presents/s, %.1f MiB/s copied to the GPU buffer", second,
+             static_cast<double>(presents - last_presents) / 5.0,
+             static_cast<double>(uploaded - last_uploaded) / 5.0 / 1048576.0);
+        static uint64_t last_counters[10] = {};
+        uint64_t counters[10] = {};
+        rex::graphics::SharedMemoryCounters(counters);
+        double rate[10];
+        for (int i = 0; i < 10; ++i) {
+          rate[i] = static_cast<double>(counters[i] - last_counters[i]) / 5.0;
+          last_counters[i] = counters[i];
+        }
+        const double mib = 1048576.0;
+        Line("STATS %d s: of that %.1f MiB/s hot pages, for %.1f MiB/s the draws asked for; "
+             "%.0f requests/s; %.0f pages/s turned hot",
+             second, rate[0] / mib, rate[1] / mib, rate[2], rate[9]);
+        Line("STATS %d s: tracked pages uploaded, MiB/s: first time %.1f, after a write fault "
+             "%.1f, after an explicit invalidation %.1f, with no invalidation %.1f; invalidated "
+             "by faults %.1f, explicitly %.1f",
+             second, rate[3] / mib, rate[4] / mib, rate[5] / mib, rate[6] / mib, rate[7] / mib,
+             rate[8] / mib);
+        last_presents = presents;
+        last_uploaded = uploaded;
+#endif
         // And who asked for the protection changes.
         static uint64_t last_site[rex::memory::kPs5ProtectSiteCount] = {};
         uint64_t per_second[rex::memory::kPs5ProtectSiteCount];
@@ -675,6 +709,43 @@ int main() {
         ProfileRuntimeThreads(runtime->kernel_state(), 20, 25);
         next_profile_second = second + 40;
         g_mcla_profile_request.store(false, std::memory_order_relaxed);
+      }
+#endif
+#ifdef MCLA_TUNE_FROM
+      // Tuning run: from this second on, a different combination of the two
+      // write-tracking settings every 30 s, each announced, so that one drive
+      // compares them (the STATS lines carry the presents and the copy volume
+      // for each). The settings are read on every request, so they can change
+      // while the game runs.
+      {
+        struct Combination {
+          const char* request_log2;
+          const char* hot_faults;
+          const char* invalidation_pages_log2;
+          const char* hot_ms;
+          // clear_memory_page_state: forget at the end of every frame which
+          // pages are already in the GPU buffer, so all in use are copied again.
+          const char* clear_each_frame;
+        };
+        static const Combination combinations[] = {
+            {"16", "4", "4", "10000", "true"},  {"16", "4", "4", "10000", "false"},
+            {"18", "4", "6", "10000", "false"}, {"0", "4", "2", "10000", "false"},
+            {"16", "4", "4", "10000", "true"},  {"16", "4", "4", "10000", "false"},
+        };
+        const int combination_count = static_cast<int>(sizeof combinations / sizeof combinations[0]);
+        if (second >= MCLA_TUNE_FROM && (second - MCLA_TUNE_FROM) % 30 == 0) {
+          const Combination& now = combinations[((second - MCLA_TUNE_FROM) / 30) % combination_count];
+          rex::cvar::SetFlagByName("shared_memory_request_granularity_log2", now.request_log2);
+          rex::cvar::SetFlagByName("shared_memory_hot_page_faults", now.hot_faults);
+          rex::cvar::SetFlagByName("shared_memory_invalidation_pages_log2",
+                                   now.invalidation_pages_log2);
+          rex::cvar::SetFlagByName("shared_memory_hot_page_ms", now.hot_ms);
+          rex::cvar::SetFlagByName("clear_memory_page_state", now.clear_each_frame);
+          Line("TUNE %d s: request chunk 2^%s bytes, hot page after %s faults, a fault "
+               "invalidates 2^%s pages, hot for %s ms, page state cleared each frame: %s",
+               second, now.request_log2, now.hot_faults, now.invalidation_pages_log2, now.hot_ms,
+               now.clear_each_frame);
+        }
       }
 #endif
 #ifdef MCLA_PROFILE_AT

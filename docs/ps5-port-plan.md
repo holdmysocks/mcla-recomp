@@ -214,6 +214,21 @@ Profile after all four (partial, 132 samples): GPU command thread 28% in system 
 
 Also fixed along the way: the title converter failed with "LLVM layout leaves no room for PS5 process parameters" when SDL's orphan `.note.dlopen` section happened to end close to a page boundary (now placed with `.rodata` by `ps5/title_build.sh`; the title is 87 MB, was 94 MB), and `grep | head -1` under `pipefail` made the build scripts fail now and then (`grep -m1`).
 
+### Frame rate tuning runs (2026-10-04)
+
+Method: a build with `MCLA_TUNE_FROM=<second>` switches between combinations of the write-tracking settings every 30 s while the game is driven, and the host's 5-second `STATS` lines carry presents/s, the volume copied to the GPU buffer and why. The settings are read on every request, so they can change while the game runs.
+
+Findings, in game, driving:
+
+- About 2.2 GiB/s was being copied to the GPU buffer (about 110 MiB per frame), in about 250,000 requests/s.
+- Hot pages were copied whole for every draw that used them: 350-600 MiB/s for the 30-50 MiB/s the draws asked for. Now only the bytes asked for are copied, to 64-byte boundaries (`shared_memory_hot_page_exact`, `UploadByteRanges` in the Vulkan backend). Measured: about 35 MiB/s. No visual faults seen by the user in one run.
+- `RequestRanges` allocated two vectors per call; it now reuses member lists.
+- A hot period of 10 s instead of 2 s (`shared_memory_hot_page_ms`) roughly halved write faults (about 500/s to 150-300/s): a hot page has to fault 4 times to be found hot again each time its period ends.
+- A write fault invalidates the block of 64 pages around it, which is 1 MiB with 16 KiB pages against 256 KiB on a PC. `shared_memory_invalidation_pages_log2` limits it; 2^4 pages with 64 KiB request chunks looked a little better than the defaults, not conclusively (scenes differ between stretches).
+- Hot pages off is clearly worse (2,500 faults/s, 13-16 presents/s).
+- 700-2,100 MiB/s of the copying was pages uploaded again with nothing having invalidated them. Cause: the SDK's `clear_memory_page_state` (default on) drops the valid state of every CPU-uploaded page at the end of each frame. Whether the game needs it is the next test (the tuning cycle alternates it).
+- With by-the-byte hot pages and the cheaper request path the run held 28-30 presents/s for most of its length, including the stretch with the old hot-page behaviour, so the scene may have been lighter; not yet a confirmed gain.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

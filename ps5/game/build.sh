@@ -120,6 +120,8 @@ for stage in "${stages[@]}"; do
     [ -z "${MCLA_WATCH_GRANULARITY:-}" ] || extra="$extra -DMCLA_WATCH_GRANULARITY=$MCLA_WATCH_GRANULARITY"
     [ -z "${MCLA_REQUEST_GRANULARITY_LOG2:-}" ] || extra="$extra -DMCLA_REQUEST_GRANULARITY_LOG2=$MCLA_REQUEST_GRANULARITY_LOG2"
     [ -z "${MCLA_HOT_PAGE_FAULTS:-}" ] || extra="$extra -DMCLA_HOT_PAGE_FAULTS=$MCLA_HOT_PAGE_FAULTS"
+    # A tuning run: cycle through setting combinations every 30 s from this second.
+    [ -z "${MCLA_TUNE_FROM:-}" ] || extra="$extra -DMCLA_TUNE_FROM=$MCLA_TUNE_FROM"
     [ -z "${MCLA_LOG_LEVEL:-}" ] || extra="$extra -DMCLA_LOG_LEVEL=\\\"$MCLA_LOG_LEVEL\\\""
     if [ -n "${TITLE:-}" ]; then
         # As an installable title, linked with the Vulkan driver, log over TCP.
