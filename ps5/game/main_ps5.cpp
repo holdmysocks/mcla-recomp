@@ -56,7 +56,11 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context_sdl.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/util/object_table.h>
 #include <rex/system/xthread.h>
+#include <rex/thread.h>
+
+#include <pthread.h>
 
 // As a title (-DMCLA_TITLE) the log goes over a TCP connection from the PC; as
 // a payload g_mcla_log_fd is standard output, the loader socket.
@@ -149,6 +153,56 @@ __attribute__((constructor(101))) void InstallEarlyCrashReporter() {
   for (int signal_number : {SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE}) {
     sigaction(signal_number, &action, nullptr);
   }
+}
+
+// --- Thread dump -------------------------------------------------------------------
+//
+// When the game stalls there is no debugger to ask why. This signals each of
+// the runtime's threads in turn; the handler prints where that thread is
+// executing and the code addresses on its stack, and returns without touching
+// the context. Addresses are symbolised on the PC against the linked ELF.
+
+constexpr int kDumpSignal = SIGXCPU;
+
+void DumpHandler(int, siginfo_t*, void* context) {
+  auto* machine = reinterpret_cast<mcontext_t*>(static_cast<uint8_t*>(context) + 0x40);
+  const uint64_t anchor = reinterpret_cast<uint64_t>(&EarlyAnchor);
+  const uint64_t low = anchor > 0x20000000 ? anchor - 0x20000000 : 0x1000;
+  EarlyHex("  pc ", static_cast<uint64_t>(machine->mc_rip));
+  const uint64_t* stack = reinterpret_cast<const uint64_t*>(machine->mc_rsp);
+  int printed = 0;
+  for (int i = 0; i < 1024 && printed < 14; ++i) {
+    const uint64_t word = stack[i];
+    if (word > low && word < anchor + 0x20000000) {
+      EarlyHex("  stack ", word);
+      ++printed;
+    }
+  }
+}
+
+void InstallDumpHandler() {
+  struct sigaction action;
+  std::memset(&action, 0, sizeof action);
+  action.sa_sigaction = DumpHandler;
+  action.sa_flags = SA_SIGINFO | SA_RESTART;
+  sigemptyset(&action.sa_mask);
+  sigaction(kDumpSignal, &action, nullptr);
+}
+
+void Line(const char* format, ...);
+
+void DumpRuntimeThreads(rex::system::KernelState* kernel_state) {
+  auto threads = kernel_state->object_table()->GetObjectsByType<rex::system::XThread>();
+  Line("THREAD DUMP: %d runtime threads, code anchor %p", static_cast<int>(threads.size()),
+       reinterpret_cast<void*>(&EarlyAnchor));
+  for (auto& thread : threads) {
+    if (!thread || !thread->thread()) continue;
+    Line(" thread '%s' id %u%s", thread->name().c_str(), static_cast<unsigned>(thread->thread_id()),
+         thread->is_guest_thread() ? " (guest)" : "");
+    pthread_kill(reinterpret_cast<pthread_t>(thread->thread()->native_handle()), kDumpSignal);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  }
+  Line("THREAD DUMP ends");
 }
 
 void Line(const char* format, ...) {
@@ -391,10 +445,16 @@ int main() {
 
 #if MCLA_STAGE >= 7
   // The message loop needs this thread; a second one reports and ends the run.
-  std::thread ticker([&app_context]() {
+  InstallDumpHandler();
+  std::thread ticker([&app_context, &runtime]() {
     for (int second = 1; second <= MCLA_RUN_SECONDS; ++second) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
       Line("alive: %d s", second);
+      // Twice, a few seconds apart: a thread at the same place both times is
+      // stuck there, one that has moved is running.
+      if (second == 4 || second == 8) {
+        DumpRuntimeThreads(runtime->kernel_state());
+      }
     }
     Finish("run time reached", 0);
   });

@@ -138,6 +138,14 @@ Host stages (`ps5/game/main_ps5.cpp`):
 
 The stage 5 title imports eight functions the console import check did not cover: `__pthread_cleanup_pop_imp`, `__pthread_cleanup_push_imp`, `nanf`, `pthread_setcancelstate`, and the four from before (`fork`, `vfork`, `setsid`, `_Unwind_Backtrace`). A null one would show as a jump to address 0 in the crash report.
 
+### Stage 7 findings (2026-10-03/04)
+
+- **First run:** 30 s, no crash, but the screen kept the console's own loading background (no frame flipped) and the log went silent right after `SetInterruptCallback`. Debug logging showed no further kernel calls.
+- **Thread dump** (added to the host: `SIGXCPU` to each runtime thread, handler prints pc and stack code addresses, symbolised on the PC with `out/symdump.py`): the main guest thread was in the game's GPU fence wait (`sub_82412F98` via `mcla_fence_spin`), the GPU command thread idle waiting for commands, the vsync thread delivering interrupts. The game had submitted work the GPU never saw.
+- **Not the cause:** protection on direct memory. Arena step 12 (title): a write faults after plain `mprotect` and after `sceKernelMprotect`, to no access and to read-only (5 of 5).
+- **A real bug found:** the generated header `mcla_pch.h` has its own copy of the 0xE0000000 physical range's 4 KiB host offset rule (`REX_PHYS_HOST_OFFSET`), naming only Windows and Apple Silicon. The runtime applies the offset on PS5; the game code did not, so the two disagreed by 4 KiB about that memory, where the game builds its GPU command buffers. Fixed in the SDK's codegen templates (`pch_h.inja`, `ppc_config_h.inja`) and in the generated header; `ps5/game/build.sh` now fails if the header lacks it, and rebuilds the hook sources when the header changes.
+- **The rebuilt title is 94 MB** (`.text` 60.8 MB against 51 MB). It was uploaded and verified byte for byte. Before it was launched the console went into rest mode on its own and had to be brought back; that was not caused by the title, which had not been started.
+
 ## Console crash on the first P2/P3 run (2026-10-03)
 
 The first title that ran the runtime's own code on the console, `PPSA99778` ("MCLA Arena Test": `Memory::Initialize`, guest heaps, physical mirrors, a 256 MiB commit and three deliberate faults through the new PS5 fault handler), **crashed the whole console**, not just the title. The user had to re-jailbreak.

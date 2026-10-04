@@ -294,6 +294,32 @@ index 4edde2b..81f8d34 100644
  #ifdef VK_USE_PLATFORM_XCB_KHR
      bool ext_KHR_xcb_surface = false;  // #6
  #endif
+diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
+index 68274d2..b10adf9 100644
+--- a/resources/templates/codegen/pch_h.inja
++++ b/resources/templates/codegen/pch_h.inja
+@@ -124,7 +124,7 @@ extern PPCFuncMapping PPCFuncMappings[];
+ // Memory Access
+ //=============================================================================
+ 
+-#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && REX_ARCH_ARM64)
++#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && REX_ARCH_ARM64) || REX_PLATFORM_PS5
+ #define REX_PHYS_HOST_OFFSET(addr) (((u32)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
+ #else
+ #define REX_PHYS_HOST_OFFSET(addr) 0u
+diff --git a/resources/templates/test/ppc_config_h.inja b/resources/templates/test/ppc_config_h.inja
+index 0c334f8..4d278ba 100644
+--- a/resources/templates/test/ppc_config_h.inja
++++ b/resources/templates/test/ppc_config_h.inja
+@@ -73,7 +73,7 @@
+ #endif
+ #endif
+ 
+-#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && REX_ARCH_ARM64)
++#if REX_PLATFORM_WIN32 || (REX_PLATFORM_MAC && REX_ARCH_ARM64) || REX_PLATFORM_PS5
+ #define REX_PHYS_HOST_OFFSET(addr) (((u32)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
+ #else
+ #define REX_PHYS_HOST_OFFSET(addr) 0u
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
 index 1ddafd0..3e873dc 100644
 --- a/src/core/CMakeLists.txt

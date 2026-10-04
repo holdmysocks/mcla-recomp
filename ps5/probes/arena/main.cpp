@@ -35,6 +35,15 @@
 //      in for it (reserve the range, map one allocation at two addresses,
 //      change protection, and finally allocate and map the full size)
 //
+//  12  title only. Does a protection change on a direct-memory view take
+//      effect? Step 11 only checked that the calls return success. The
+//      runtime catches the guest's writes to GPU registers by making that
+//      window inaccessible and handling the fault; with the game stalled
+//      waiting for the GPU while the GPU saw no commands, the question is
+//      whether such a write faults at all. For plain mprotect and for
+//      sceKernelMprotect, to no access and to read-only: write a byte and
+//      see whether the runtime's handler was entered
+//
 // 8 and 9 are for re-running as a title what has already passed step by step
 // as a payload.
 //
@@ -54,7 +63,7 @@
 #include <rex/system/xmemory.h>
 
 #ifndef MCLA_STEP
-#error "build with -DMCLA_STEP=0..11"
+#error "build with -DMCLA_STEP=0..12"
 #endif
 
 #include <signal.h>
@@ -701,6 +710,86 @@ void TestDirectMemory() {
 
 #endif  // MCLA_STEP == 11
 
+// --- Step 12: do protection changes on direct memory take effect? -----------------
+
+#if MCLA_STEP == 12
+#ifndef MCLA_TITLE
+#error "step 12 is for a title (TITLE=<id>): direct memory is a title's memory"
+#endif
+
+extern "C" {
+int32_t sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end, size_t length,
+                                      size_t alignment, int memory_type, int64_t* physical_start);
+int32_t sceKernelReleaseDirectMemory(int64_t start, size_t length);
+int32_t sceKernelMapDirectMemory(void** address, size_t length, int protection, int flags,
+                                 int64_t direct_start, size_t alignment);
+int64_t sceKernelGetDirectMemorySize(void);
+int32_t sceKernelMprotect(const void* address, size_t length, int protection);
+int32_t sceKernelMunmap(void* address, size_t length);
+}
+
+// One case: make the page writable again both ways, apply the protection under
+// test, write one byte, and report whether the handler ran. The handler skips
+// the faulting instruction, so a fault leaves the byte unchanged and no fault
+// leaves it 7.
+void ProtectionCase(const char* what, uint8_t* page, size_t length, bool use_sce, int protection) {
+  sceKernelMprotect(page, length, 3);
+  mprotect(page, length, PROT_READ | PROT_WRITE);
+  page[0x10] = 0;
+  g_fault.count = 0;
+
+  NEXT("%s", what);
+  const int result = use_sce ? sceKernelMprotect(page, length, protection)
+                             : mprotect(page, length, protection);
+  const int error = errno;
+  NEXT("write one byte to the page");
+  StoreByte(page + 0x10);
+  const int faults = g_fault.count;
+
+  sceKernelMprotect(page, length, 3);
+  mprotect(page, length, PROT_READ | PROT_WRITE);
+  Line("  call returned %d (0x%08X, errno %d); faults taken %d; byte afterwards %u", result,
+       static_cast<unsigned>(result), result ? error : 0, faults, static_cast<unsigned>(page[0x10]));
+  char text[200];
+  std::snprintf(text, sizeof text, "%s: the write faulted", what);
+  Check(faults == 1 && page[0x10] == 0, text);
+}
+
+void TestDirectMemoryProtection() {
+  const size_t unit = 0x10000;
+  NEXT("allocate 64 KiB of direct memory and map it read-write");
+  int64_t start = -1;
+  int32_t result =
+      sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), unit, unit, 12, &start);
+  void* view = nullptr;
+  if (result == 0) {
+    result = sceKernelMapDirectMemory(&view, unit, 3, 0, start, unit);
+  }
+  Check(result == 0 && view, "a direct-memory page to test on");
+  if (result != 0 || !view) return;
+  auto* page = static_cast<uint8_t*>(view);
+  Line("page %p, StoreByte at %p", view, reinterpret_cast<void*>(&StoreByte));
+
+  g_fault = FaultState();
+  g_fault.mode = FaultMode::kSkip;
+  g_fault.page = page;
+  g_fault.page_size = unit;
+  NEXT("install the runtime's fault handler");
+  rex::arch::ExceptionHandler::Install(FaultHandler, nullptr);
+
+  ProtectionCase("plain mprotect to no access", page, unit, false, PROT_NONE);
+  ProtectionCase("plain mprotect to read-only", page, unit, false, PROT_READ);
+  ProtectionCase("sceKernelMprotect to no access", page, unit, true, 0);
+  ProtectionCase("sceKernelMprotect to read-only", page, unit, true, 1);
+
+  NEXT("uninstall the handler, unmap and release");
+  rex::arch::ExceptionHandler::Uninstall(FaultHandler, nullptr);
+  sceKernelMunmap(view, unit);
+  sceKernelReleaseDirectMemory(start, unit);
+}
+
+#endif  // MCLA_STEP == 12
+
 }  // namespace
 
 int main() {
@@ -751,6 +840,8 @@ int main() {
   TestRawArenaCalls();
 #elif MCLA_STEP == 11
   TestDirectMemory();
+#elif MCLA_STEP == 12
+  TestDirectMemoryProtection();
 #elif MCLA_STEP == 8
   TestFault(FaultMode::kUnprotect);
   TestFault(FaultMode::kSkip);
