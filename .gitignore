@@ -34,3 +34,6 @@ keys.*
 /tools/
 /out/
 *.log
+
+# The play shortcut scripts/make_pc.ps1 makes
+*.lnk

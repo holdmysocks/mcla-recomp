@@ -17,6 +17,7 @@ class MclaApp : public rex::ReXApp {
   }
 
  protected:
+  void OnConfigurePaths(rex::PathConfig& paths) override;
   void OnPreSetup(rex::RuntimeConfig& config) override;
   void OnPostSetup() override;
   void OnPreLaunchModule() override;

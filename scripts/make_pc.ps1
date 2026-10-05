@@ -3,7 +3,9 @@
 #   .\scripts\make_pc.ps1 -Iso C:\path\to\your.iso
 #
 # Needs Git, CMake, Ninja, Python 3, Visual Studio Build Tools 2022 (C++
-# workload) and Clang 20; docs\pc-build-guide.md says where to get them.
+# workload) and Clang 20. Whatever is missing, the script offers to install
+# (winget, and Clang from the LLVM project's releases); docs\pc-build-guide.md
+# lists them for doing it by hand.
 # Everything is built on your machine from your own copy of the game: nothing
 # of the game is in this repository, and what this builds is not for sharing.
 #
@@ -13,8 +15,9 @@
 #   -Iso PATH    your disc image (Midnight Club: Los Angeles Complete Edition,
 #                USA/Europe, Xbox 360). Not needed once game\ is extracted.
 #   -Play        start the game when the build is done
+#   -InstallTools  install missing tools without asking first
 #   -Preset      CMake preset of the game build (default win-amd64-release)
-param([string]$Iso = "", [switch]$Play, [string]$Preset = "win-amd64-release")
+param([string]$Iso = "", [switch]$Play, [switch]$InstallTools, [string]$Preset = "win-amd64-release")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -41,12 +44,67 @@ Push-Location $root
 try {
     # -----------------------------------------------------------------------
     Step "1/6 tools"
-    . "$PSScriptRoot\env.ps1"
-    $missing = @()
-    foreach ($tool in "git", "cmake", "ninja", "python", "clang") {
-        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { $missing += $tool }
+    # What the build needs, how to tell that it is there, and how to get it.
+    # Programs come from winget (part of Windows 10 and 11); Clang is the
+    # portable build from the LLVM project, unpacked into tools\.
+    $llvmVersion = "20.1.8"
+    $llvmName = "clang+llvm-$llvmVersion-x86_64-pc-windows-msvc"
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    function HasBuildTools {
+        if (-not (Test-Path $vswhere)) { return $false }
+        [bool](& $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
     }
-    if ($missing) { Fail "not found: $($missing -join ', '). See 'What you need' in docs\pc-build-guide.md" }
+    function RefreshPath {
+        $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                    [Environment]::GetEnvironmentVariable("PATH", "User")
+        . "$PSScriptRoot\env.ps1"
+    }
+    function MissingTools {
+        RefreshPath
+        $list = @()
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $list += "Git" }
+        if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) { $list += "CMake" }
+        if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { $list += "Ninja" }
+        # The Microsoft Store's placeholder python.exe is not Python.
+        $python = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $python -or $python.Source -like "*WindowsApps*") { $list += "Python" }
+        if (-not (HasBuildTools)) { $list += "Visual Studio Build Tools" }
+        if (-not (Get-Command clang -ErrorAction SilentlyContinue)) { $list += "Clang" }
+        $list
+    }
+    $missing = @(MissingTools)
+    if ($missing) {
+        "missing: $($missing -join ', ')"
+        if (-not $InstallTools) {
+            $answer = Read-Host "Install them now? Programs come from winget, Clang from the LLVM project's releases; the Build Tools are several GB and ask for administrator rights. [y/N]"
+            if ($answer -notmatch '^[yY]') { Fail "install them (see 'What you need' in docs\pc-build-guide.md) and run this again, or run with -InstallTools" }
+        }
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Fail "winget is not available; install the tools by hand (docs\pc-build-guide.md)" }
+        $ids = @{ "Git" = "Git.Git"; "CMake" = "Kitware.CMake"; "Ninja" = "Ninja-build.Ninja"; "Python" = "Python.Python.3.12" }
+        foreach ($name in $missing) {
+            if ($ids.ContainsKey($name)) {
+                "installing $name"
+                Logged "install-$name" { winget install --id $ids[$name] -e --accept-source-agreements --accept-package-agreements }
+            } elseif ($name -eq "Visual Studio Build Tools") {
+                "installing Visual Studio Build Tools with the C++ workload (this takes a while)"
+                Logged "install-build-tools" {
+                    winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements `
+                        --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+                }
+            } elseif ($name -eq "Clang") {
+                "downloading Clang $llvmVersion (about 900 MB) into tools\"
+                New-Item -ItemType Directory -Force "$root\tools" | Out-Null
+                $archive = "$root\tools\$llvmName.tar.xz"
+                Logged "install-clang" {
+                    curl.exe -L --fail -o $archive "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/$llvmName.tar.xz"
+                    if ($LASTEXITCODE -eq 0) { tar.exe -xf $archive -C "$root\tools" }
+                }
+                Remove-Item -LiteralPath $archive -ErrorAction SilentlyContinue
+            }
+        }
+        $missing = @(MissingTools)
+        if ($missing) { Fail "still missing after installing: $($missing -join ', '). A new PowerShell window may be needed; then run this again" }
+    }
     "clang: $((clang --version | Select-Object -First 1))"
 
     # -----------------------------------------------------------------------
@@ -107,7 +165,15 @@ try {
 
     # -----------------------------------------------------------------------
     Step "6/6 done"
-    "game: $build\mcla.exe"
-    "play: .\scripts\play_loop.ps1     (or see 'Play' in docs\pc-build-guide.md)"
-    if ($Play) { & "$PSScriptRoot\play_loop.ps1" -Preset $Preset }
+    # A shortcut in the repository folder, so that playing is a double-click.
+    # mcla.exe finds the game folder and its graphics plugin by itself.
+    $shortcutPath = "$root\Midnight Club Los Angeles.lnk"
+    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = "$build\mcla.exe"
+    $shortcut.WorkingDirectory = $build
+    $shortcut.Save()
+    "game:     $build\mcla.exe"
+    "shortcut: $shortcutPath"
+    "To play, double-click either one."
+    if ($Play) { Start-Process "$build\mcla.exe" -WorkingDirectory $build }
 } finally { Pop-Location }

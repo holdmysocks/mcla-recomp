@@ -31,10 +31,9 @@ The game's PowerPC code is translated to C++ ahead of time by the [ReXGlue SDK](
 
 ```powershell
 .\scripts\make_pc.ps1 -Iso C:\path\to\your.iso
-.\scripts\play_loop.ps1
 ```
 
-The first command clones and patches the ReXGlue SDK, builds it, extracts your game, recompiles its code and builds `mcla.exe`; the second starts the game. Requirements (Git, CMake, Ninja, Clang 20, Visual Studio Build Tools, Python 3), every step by hand, options and troubleshooting are in [`docs/pc-build-guide.md`](docs/pc-build-guide.md).
+It clones and patches the ReXGlue SDK, builds it, extracts your game, recompiles its code and builds `mcla.exe`. Then double-click the **Midnight Club Los Angeles** shortcut it leaves in the repository folder (or `mcla.exe` itself); no options are needed. Requirements (Git, CMake, Ninja, Clang 20, Visual Studio Build Tools, Python 3), every step by hand, options and troubleshooting are in [`docs/pc-build-guide.md`](docs/pc-build-guide.md).
 
 ## Building and installing (PS5)
 

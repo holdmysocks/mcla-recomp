@@ -17,6 +17,8 @@ State: boots, menus, races, garage and upgrades work with audio and a controller
 | Clang 20 | The portable build `clang+llvm-20.1.8-x86_64-pc-windows-msvc` from the [LLVM releases](https://github.com/llvm/llvm-project/releases/tag/llvmorg-20.1.8), unpacked into `tools\` in this repository. `scripts\env.ps1` puts it on the path; edit that file if your Clang is elsewhere. |
 | Disk | About 20 GB: the disc image, the extracted game, the SDK and the build trees. |
 
+You do not have to install these yourself: the build script checks for each one and offers to install what is missing (the programs with `winget`, which is part of Windows 10 and 11, and Clang from the LLVM project's releases into `tools\`). The Build Tools are several gigabytes and ask for administrator rights. Git is the exception if you clone the repository with it, as below.
+
 All commands below are PowerShell.
 
 ## Build
@@ -27,16 +29,16 @@ cd mcla-recomp
 .\scripts\make_pc.ps1 -Iso C:\path\to\your.iso
 ```
 
-Unpack Clang into `tools\` first (see the table above). Add `-Play` to start the game when the build is done.
+Answer `y` when it lists missing tools and asks whether to install them, or add `-InstallTools` to skip the question. Add `-Play` to start the game when the build is done. The build leaves a shortcut, **Midnight Club Los Angeles**, in the repository folder.
 
 The script does the six steps below in order and skips each one whose result is already there, so after a failure, or after `git pull`, you run the same command again and it continues. Each step's output is in `out\logs`; when a step fails the script prints the end of its log.
 
-1. Checks that the tools are installed.
+1. Checks that the tools are installed, and installs the missing ones if you agree.
 2. Clones the ReXGlue SDK v0.10.0 into `third_party\rexglue-sdk`, applies this project's patches and makes the one Windows-specific repair the checkout needs.
 3. Builds and installs the SDK: the long step, once.
 4. Extracts the game files from your disc image into `game\` (thirteen files, about 6 GB, copied as they are; git ignores the folder).
 5. Recompiles your `game\default.xex` into `generated\` and builds `out\build\win-amd64-release\mcla.exe`.
-6. Says where the game is.
+6. Makes the shortcut and says where the game is.
 
 Then go to "Play" below. The rest of this section is the same steps by hand, for when you want to see or change what happens.
 
@@ -96,18 +98,19 @@ It runs the recompiler on your `game\default.xex` (the result is in `generated\`
 
 ## Play
 
+Double-click **Midnight Club Los Angeles** in the repository folder, the shortcut the build made. It points at `out\build\win-amd64-release\mcla.exe`, which you can also start directly: it finds the extracted game and its graphics plugin by itself, with no options needed.
+
+The folder has to stay where it was built: the game data is read from `game\` in the repository, not copied next to the program.
+
+If the game ever closes by itself in the middle of play, it may have reached a function the recompiler missed (one only reached through a pointer). Starting it this way instead finds and fixes that automatically:
+
 ```powershell
 .\scripts\play_loop.ps1
 ```
 
-It starts the game in a window and waits. Should the game stop on a function the recompiler missed (one reached only through a pointer), the script adds that address to `config\runtime_discovered.toml`, rebuilds and starts the game again; if that happens, please send the new entry as an issue or pull request so the next person does not hit it. Close the window to end the session.
+It runs the game, and when the game stops on such a function it adds the address to `config\runtime_discovered.toml`, rebuilds (about a minute) and starts the game again. If that happens, please send the new entry as an issue or pull request so the next person does not hit it.
 
-To start the game yourself:
-
-```powershell
-cd out\build\win-amd64-release
-.\mcla.exe --game_data_root=..\..\..\game --gpu_plugin=xenos
-```
+From a command line, options go after the program name, for example `mcla.exe --fullscreen=true`.
 
 Useful options: `--fullscreen=true`, `--mcla_fps=60` (30, 60, 120, or 0 for uncapped), `--mcla_intro=fast` (or `skip`), `--log_file=<path>`. An Xbox or PlayStation controller works; the button prompts follow the controller (`--mcla_button_prompts=xbox|playstation|auto`).
 
