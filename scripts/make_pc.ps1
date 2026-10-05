@@ -33,7 +33,10 @@ function Fail([string]$text) { Write-Host ""; Write-Host "FAILED: $text" -Foregr
 # Run a command with its output in a log; on failure show the end of the log.
 function Logged([string]$name, [scriptblock]$command) {
     $log = "$logs\$name.log"
-    & $command *> $log
+    # Windows PowerShell 5.1 turns a program's redirected stderr into errors,
+    # which "Stop" would end the script on; the exit code is what counts.
+    $ErrorActionPreference = "Continue"
+    & $command 2>&1 | ForEach-Object { "$_" } > $log
     if ($LASTEXITCODE -ne 0) {
         Get-Content $log -Tail 25 | ForEach-Object { Write-Host $_ }
         Fail "$name (full log: $log)"
