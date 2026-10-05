@@ -17,9 +17,30 @@ State: boots, menus, races, garage and upgrades work with audio and a controller
 | Clang 20 | The portable build `clang+llvm-20.1.8-x86_64-pc-windows-msvc` from the [LLVM releases](https://github.com/llvm/llvm-project/releases/tag/llvmorg-20.1.8), unpacked into `tools\` in this repository. `scripts\env.ps1` puts it on the path; edit that file if your Clang is elsewhere. |
 | Disk | About 20 GB: the disc image, the extracted game, the SDK and the build trees. |
 
-All commands below are PowerShell, run from the repository's folder.
+All commands below are PowerShell.
 
-## 1. Get the sources
+## Build
+
+```powershell
+git clone https://github.com/holdmysocks/mcla-recomp.git
+cd mcla-recomp
+.\scripts\make_pc.ps1 -Iso C:\path\to\your.iso
+```
+
+Unpack Clang into `tools\` first (see the table above). Add `-Play` to start the game when the build is done.
+
+The script does the six steps below in order and skips each one whose result is already there, so after a failure, or after `git pull`, you run the same command again and it continues. Each step's output is in `out\logs`; when a step fails the script prints the end of its log.
+
+1. Checks that the tools are installed.
+2. Clones the ReXGlue SDK v0.10.0 into `third_party\rexglue-sdk`, applies this project's patches and makes the one Windows-specific repair the checkout needs.
+3. Builds and installs the SDK: the long step, once.
+4. Extracts the game files from your disc image into `game\` (thirteen files, about 6 GB, copied as they are; git ignores the folder).
+5. Recompiles your `game\default.xex` into `generated\` and builds `out\build\win-amd64-release\mcla.exe`.
+6. Says where the game is.
+
+Then go to "Play" below. The rest of this section is the same steps by hand, for when you want to see or change what happens.
+
+### By hand: 1. Get the sources
 
 ```powershell
 git clone https://github.com/holdmysocks/mcla-recomp.git
@@ -44,7 +65,7 @@ Get-ChildItem $dir -File | Where-Object { $_.Length -lt 200 } | ForEach-Object {
 }
 ```
 
-## 2. Build and install the SDK
+### 2. Build and install the SDK
 
 ```powershell
 . .\scripts\env.ps1
@@ -57,7 +78,7 @@ cd ..\..
 
 This is the long step, once. It leaves the recompiler and the runtime in `third_party\rexglue-sdk\out\install\win-amd64`.
 
-## 3. Extract your game
+### 3. Extract your game
 
 ```powershell
 python scripts\extract_game.py C:\path\to\your.iso
@@ -65,7 +86,7 @@ python scripts\extract_game.py C:\path\to\your.iso
 
 Thirteen files (about 6 GB) go to `game\`, which git ignores. The files are copied as they are; nothing is decrypted or changed.
 
-## 4. Recompile and build
+### 4. Recompile and build
 
 ```powershell
 .\scripts\build.ps1
@@ -73,7 +94,7 @@ Thirteen files (about 6 GB) go to `game\`, which git ignores. The files are copi
 
 It runs the recompiler on your `game\default.xex` (the result is in `generated\`) and builds `out\build\win-amd64-release\mcla.exe`. The first build compiles about 120 large files and takes several minutes; later ones only what changed.
 
-## 5. Play
+## Play
 
 ```powershell
 .\scripts\play_loop.ps1
@@ -96,7 +117,7 @@ In the game, the pause menu has three extra entries: DISPLAY (frame-rate target,
 
 ```powershell
 git pull
-.\scripts\build.ps1
+.\scripts\make_pc.ps1
 ```
 
 If the update changed `patches\`, the SDK has to be patched and built again: in `third_party\rexglue-sdk` run `git checkout .` and `git clean -fd` (and the same in `thirdparty\FFmpeg`), then repeat the patch commands of step 1 and all of step 2.

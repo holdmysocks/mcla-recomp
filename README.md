@@ -29,14 +29,12 @@ The game's PowerPC code is translated to C++ ahead of time by the [ReXGlue SDK](
 
 ## Building and running (Windows)
 
-Requirements: Git, CMake 3.25+, Ninja, Clang 20, Visual Studio Build Tools (for the Windows SDK), Python 3. In short:
+```powershell
+.\scripts\make_pc.ps1 -Iso C:\path\to\your.iso
+.\scripts\play_loop.ps1
+```
 
-1. Clone ReXGlue v0.10.0 with submodules into `third_party/rexglue-sdk`, apply the patches in `patches/`, and build and install it.
-2. `python scripts/extract_game.py <your.iso>` extracts your game into `game/`.
-3. `scripts/build.ps1` recompiles your `default.xex` and builds `mcla.exe`.
-4. `scripts/play_loop.ps1` starts the game.
-
-Every command, the one Windows-specific repair the SDK checkout needs, the options and troubleshooting are in [`docs/pc-build-guide.md`](docs/pc-build-guide.md).
+The first command clones and patches the ReXGlue SDK, builds it, extracts your game, recompiles its code and builds `mcla.exe`; the second starts the game. Requirements (Git, CMake, Ninja, Clang 20, Visual Studio Build Tools, Python 3), every step by hand, options and troubleshooting are in [`docs/pc-build-guide.md`](docs/pc-build-guide.md).
 
 ## Building and installing (PS5)
 
