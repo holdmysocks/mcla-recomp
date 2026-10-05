@@ -132,9 +132,11 @@ float ReadGuestFloat(uint32_t address) {
 }  // namespace
 
 void MclaTickButtonPrompts();
+void MclaTickPerfOptions();
 
 void mcla_frame_delta(PPCRegister& r8) {
   MclaTickButtonPrompts();
+  MclaTickPerfOptions();
   if (OriginalTiming()) {
     return;
   }

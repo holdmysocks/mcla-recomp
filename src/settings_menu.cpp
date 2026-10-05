@@ -388,9 +388,34 @@ const ItemDef kDisplayItems[] = {
     {"PM_MxDof", ItemKind::kToggle, "mcla_depth_of_field", "DEPTH OF FIELD"},
 };
 
+// Detail the game can do without when the frame rate matters more; all as
+// shipped by default (src/perf_options.cpp). Rows marked NEXT START are read
+// by the game once, when it starts.
+constexpr double kDetailScales[] = {0.5, 0.75, 1.0};
+constexpr double kDensityScales[] = {0.0, 0.5, 1.0};
+constexpr double kTrafficDistances[] = {250.0, 325.0, 400.0};
+
 const ItemDef kPerformanceItems[] = {
     {"PM_MxSingleTile", ItemKind::kToggle, "mcla_single_tile", "SINGLE TILE RENDERING"},
     {"PM_MxFenceYield", ItemKind::kToggle, "mcla_fence_yield", "GPU WAIT YIELD"},
+    {"PM_MxShadows", ItemKind::kToggle, "mcla_shadows", "SHADOWS"},
+    {"PM_MxFoliageShadows", ItemKind::kToggle, "mcla_foliage_shadows", "FOLIAGE SHADOWS"},
+    {"PM_MxCityLod", ItemKind::kNumberChoice, "mcla_city_lod", "CITY DETAIL DISTANCE", nullptr,
+     nullptr, kDetailScales, 3, "%.2f"},
+    {"PM_MxTrafficLod", ItemKind::kNumberChoice, "mcla_traffic_lod", "TRAFFIC DETAIL DISTANCE",
+     nullptr, nullptr, kDetailScales, 3, "%.2f"},
+    {"PM_MxTrafficDist", ItemKind::kNumberChoice, "mcla_traffic_distance", "TRAFFIC DISTANCE",
+     nullptr, nullptr, kTrafficDistances, 3, "%.0f"},
+    {"PM_MxPeds", ItemKind::kNumberChoice, "mcla_pedestrians", "PEDESTRIANS", nullptr, nullptr,
+     kDensityScales, 3, "%.1f", "NONE"},
+    {"PM_MxParked", ItemKind::kNumberChoice, "mcla_parked_cars", "PARKED CARS", nullptr, nullptr,
+     kDensityScales, 3, "%.1f", "NONE"},
+    {"PM_MxRaceShadows", ItemKind::kToggle, "mcla_race_shadows", "RACE SHADOWS (NEXT START)"},
+    {"PM_MxFastCarShadows", ItemKind::kToggle, "mcla_fast_car_shadows",
+     "SIMPLE CAR SHADOWS (NEXT START)"},
+    {"PM_MxImpostors", ItemKind::kToggle, "mcla_foliage_impostors", "DISTANT TREES (NEXT LOAD)"},
+    {"PM_MxFsBlur", ItemKind::kToggle, "mcla_fullscreen_blur", "FULLSCREEN BLUR (NEXT START)"},
+    {"PM_MxMsaa", ItemKind::kToggle, "mcla_msaa", "ANTI ALIASING (NEXT START)"},
 };
 
 const ItemDef kControlItems[] = {

@@ -1,0 +1,97 @@
+# Optional detail reductions, and guards for crashes they or the game itself
+# can run into. Implemented in src/perf_options.cpp. Every option's default
+# leaves the game exactly as it shipped.
+#
+# The addresses and what they mean come from LARecomp (larecomp_config.toml and
+# its hook sources), used with its author's permission; the ambient density
+# and level-of-detail work there is credited to BadassBaboon.
+
+# --- The game's own developer switches ----------------------------------------
+# 0x821C06EC: the `blr` of sub_821C06C8, which registers one developer option
+# (noraceshadows, nofsblur, ...). r3 = the option's node: +0 its name, +4 a
+# pointer to its value string, which the retail game never fills in. The
+# registrar itself clears +4, so this is the first point a value can be set,
+# and it is before anything reads it.
+[[midasm_hook]]
+name = "mcla_dev_option_registered"
+address = 0x821C06EC
+registers = ["r3"]
+
+# --- Shadows, foliage, anti-aliasing ------------------------------------------
+# 0x8230C874: `lwz r11,0xC4(r31)` in sub_8230C860. With r11 = 0 the compare
+# that follows skips the whole foliage impostor shadow submission.
+[[midasm_hook]]
+name = "mcla_foliage_shadows"
+address = 0x8230C874
+registers = ["r11"]
+jump_address_on_true = 0x8230C878
+
+# 0x822E4B80 in the renderer constructor (sub_822E47E0): the multisample
+# setting. r11 = 1 selects none.
+[[midasm_hook]]
+name = "mcla_msaa"
+address = 0x822E4B80
+registers = ["r11"]
+jump_address_on_true = 0x822E4B84
+
+# 0x823126A4: `bl sub_8230D988` in the sun-shadow phase of sub_823120C8, r3 =
+# the impostor manager. sub_8230D988 searches the impostor array round-robin
+# for an entry to refresh with no bound on the search, so with the impostors
+# switched off (the array exists but nothing in it qualifies) it never
+# returns. true skips the call, to where the game's own null check goes.
+[[midasm_hook]]
+name = "mcla_impostor_search_guard"
+address = 0x823126A4
+registers = ["r3"]
+jump_address_on_true = 0x823126A8
+
+# --- Level of detail ------------------------------------------------------------
+# 0x822D5BC4: f13 = the city's level-of-detail distance scale.
+[[midasm_hook]]
+name = "mcla_city_lod"
+address = 0x822D5BC4
+registers = ["f13"]
+
+# 0x827903E0: f0 = the traffic's level-of-detail distance scale.
+[[midasm_hook]]
+name = "mcla_traffic_lod"
+address = 0x827903E0
+registers = ["f0"]
+
+# --- Ambient traffic, pedestrians, parked cars ------------------------------------
+# 0x826F5CA0: the epilogue of the ambient zone's constructor (sub_826F5CB0
+# through sub_826F5B18), after its last field is written; r3 = the zone, whose
+# first fields are the density tuning. Runs once per zone, 32 times at a city
+# load. (Not after the density_tuning.xml parse: that path never runs.)
+[[midasm_hook]]
+name = "mcla_ambient_zone"
+address = 0x826F5CA0
+after_instruction = true
+registers = ["r3"]
+
+# --- Crash guards -----------------------------------------------------------------
+# 0x82725100: a UI movie's lighting pass, r3 = its lights node. The game
+# dereferences it without checking that it is one (kind 5 at +8); a movie that
+# has none yet crashes. true skips the pass for this frame.
+[[midasm_hook]]
+name = "mcla_ui_lights_guard"
+address = 0x82725100
+registers = ["r3"]
+jump_address_on_true = 0x82725144
+
+# 0x822BC658: the racing AI's reset, r3 = its context. [[r3+8]] is the brain,
+# which can be null; the function reads through it. true returns at once.
+[[midasm_hook]]
+name = "mcla_brain_reset_guard"
+address = 0x822BC658
+registers = ["r3"]
+return_on_true = true
+
+# 0x82625424: the full map's cursor step, after sub_82624EC8 looked up the
+# neighbouring cell into r31. When that comes back null the game reads through
+# it. true takes the requested position (r30) as the result (r26) instead.
+[[midasm_hook]]
+name = "mcla_map_cursor_guard"
+address = 0x82625424
+registers = ["r31", "r30", "r26"]
+jump_address_on_true = 0x826253F4

@@ -67,3 +67,38 @@ Motion blur and depth of field are new options here (`--mcla_motion_blur`, `--mc
 Left out of the port: LARecomp's carbon-fibre, cutscene, language, FidelityFX and native-renderer tabs, its deferred restart-only settings, and the extra row on the game's controller options screen.
 
 **Status: builds, and the game boots with it compiled in. The menu itself has not been opened or exercised**; that needs someone at the controller. Things to check: the three buttons appear under Settings, each opens, checkboxes toggle with accept, value rows step with left/right and accept, back returns to the Settings tab with its normal rows, and the pause menu still works after closing and reopening.
+
+## Second look at LARecomp, and the detail options (2026-10-05)
+
+Read at its commit of 2026-10-04. What "runs above 144 FPS" rests on there:
+
+- The simulation is correct at any frame rate. That is the timing, camera and chassis hooks, all of which are here already (our 27 hooks are a subset of its 160, at the same addresses).
+- Its own notes say the game "holds 60", and 80-88 FPS in dense areas after removing a per-packet timer from the unpublished ReXGlue build it is developed against. Stock 0.10.0, which we use, has no such timer in the graphics path.
+- The route to much higher rates there is a native Direct3D 12 renderer (about 36,000 lines, `src/native_gfx`) that replaces the emulated GPU. It is off by default, still changing daily, and Windows-only.
+
+Looked at and found not to apply here: its sleep and resume-thread replacements (the sleep hook fixed a busy-wait in its own earlier hook; here the game's sleep goes through the SDK's ordinary delay); most of the runtime settings it applies (async shader compilation, bindless, readback, primary-buffer submission are the SDK's defaults already); the larger texture cache (tried here on 2026-10-03, misses did not fall; see `known-issues.md`); guards for features we do not have (mouse on the map, mod loader).
+
+Ported as `src/perf_options.cpp` and `config/perf_options.toml`, every option defaulting to the game as shipped:
+
+| Option | Menu row (PERFORMANCE) | Takes effect |
+|---|---|---|
+| `mcla_shadows` | SHADOWS | at once |
+| `mcla_foliage_shadows` | FOLIAGE SHADOWS | at once |
+| `mcla_city_lod`, `mcla_traffic_lod` | CITY / TRAFFIC DETAIL DISTANCE | at once |
+| `mcla_traffic_distance`, `mcla_pedestrians`, `mcla_parked_cars` | TRAFFIC DISTANCE, PEDESTRIANS, PARKED CARS | at once |
+| `mcla_race_shadows`, `mcla_fast_car_shadows`, `mcla_fullscreen_blur`, `mcla_msaa` | RACE SHADOWS, SIMPLE CAR SHADOWS, FULLSCREEN BLUR, ANTI ALIASING | next start |
+| `mcla_foliage_impostors` | DISTANT TREES | next load of the city |
+
+Also there: the cache-flush bypass (`sub_821D5510`, a `dcbf` loop the host does not need), and three guards (a UI movie with no lights node, the racing AI's reset with no brain, the map cursor step with no neighbouring cell) plus the impostor search guard that the DISTANT TREES option needs (it fired in testing: without it the game searches forever).
+
+Measured on PC (Ryzen 7 7800X3D, RTX 4080, Direct3D 12, title screen, uncapped). The title screen's camera cycles through views at random, so separate runs cannot be compared (the same settings gave 3,700 to 6,800 draws a frame). `--mcla_ab_test=<option>` switches one option every 4 s within a run and logs both states:
+
+| Option reduced | Frame time, as shipped | reduced | Draws a frame, as shipped | reduced |
+|---|---|---|---|---|
+| Shadows off | 20.5 ms | 18.4 ms | 6,747 | 5,515 |
+| Foliage shadows off | 18.9 ms | 18.4 ms | 6,894 | 6,603 |
+| Detail distances 0.5 | 18.3 ms | 14.4 ms | 4,969 | 3,920 |
+| Traffic 250 m, pedestrians and parked cars 0.5 | 18.2 ms | 17.4 ms | 6,284 | 5,787 |
+| All four | 22.2 ms | 11.2 ms | 6,899 | 3,257 |
+
+Frame time follows draws (about 2 us a draw plus about 2.6 ms a frame); no run went above about 112 FPS however few the draws, so the game's own thread is a second ceiling near 9 ms. The next-start options cannot be measured this way. On PS5 (PS5 Pro, play build, 2026-10-05) the user reports that everything works as before and that the options made no difference to the frame rate that could be felt, better or worse. No figures: the play build does not log frame counts, so whether the options take effect there, and what they do to the draw count in the map view, is still to be measured with a test build.
