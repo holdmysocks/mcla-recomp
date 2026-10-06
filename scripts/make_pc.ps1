@@ -43,6 +43,15 @@ function Logged([string]$name, [scriptblock]$command) {
     }
 }
 
+# Apply a patch unless it is already in: a run that stopped after this patch
+# and before the end of step 2 leaves it applied, and it does not apply twice.
+function Patch([string]$name, [string]$repo, [string]$patch) {
+    $ErrorActionPreference = "Continue"
+    git -C $repo apply --reverse --check $patch 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { "already applied: $(Split-Path $patch -Leaf)"; return }
+    Logged $name { git -C $repo apply $patch }
+}
+
 Push-Location $root
 try {
     # -----------------------------------------------------------------------
@@ -117,8 +126,8 @@ try {
             Logged "sdk-clone" { git clone --recursive --branch $sdkTag https://github.com/rexglue/rexglue-sdk.git $sdk }
         }
         if ((git -C $sdk rev-parse HEAD) -ne $sdkCommit) { Fail "the SDK checkout is not $sdkTag ($sdkCommit)" }
-        Logged "sdk-patch" { git -C $sdk apply "$root\patches\rexglue-v0.10.0-mcla.patch" }
-        Logged "sdk-patch-ffmpeg" { git -C "$sdk\thirdparty\FFmpeg" apply "$root\patches\rexglue-ffmpeg-ps5-config.patch" }
+        Patch "sdk-patch" $sdk "$root\patches\rexglue-v0.10.0-mcla.patch"
+        Patch "sdk-patch-ffmpeg" "$sdk\thirdparty\FFmpeg" "$root\patches\rexglue-ffmpeg-ps5-config.patch"
         # Git on Windows checks out symbolic links as small text files holding
         # the link's target; one of the SDK's libraries has some. Replace them
         # with copies of what they point to.
