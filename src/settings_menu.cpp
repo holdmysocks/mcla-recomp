@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <rex/cvar.h>
@@ -641,6 +642,8 @@ int ItemCurrentIndex(const ItemDef& item) {
 
 std::atomic<bool> g_settings_dirty{false};
 
+void SaveSettingsIfChanged();
+
 void ItemSetIndex(const ItemDef& item, int index) {
   if (index < 0 || index >= ItemValueCount(item)) {
     return;
@@ -660,6 +663,9 @@ void ItemSetIndex(const ItemDef& item, int index) {
     }
   }
   g_settings_dirty.store(true, std::memory_order_relaxed);
+  // Save on the change, not only when the submenu is left: the pause menu can
+  // be resumed or the window closed without passing through that path.
+  SaveSettingsIfChanged();
 }
 
 // --- Rows --------------------------------------------------------------------
@@ -923,7 +929,25 @@ void SaveSettingsIfChanged() {
   const auto path = g_mcla_settings_path
                         ? std::filesystem::path(g_mcla_settings_path)
                         : rex::filesystem::GetExecutableFolder() / "mcla.toml";
-  rex::cvar::SaveConfig(path);
+  // SaveConfig only writes values that differ from their defaults. vsync
+  // defaults to on, but ConfigureFrameTiming turns it off at startup unless the
+  // player saved an explicit value, so choosing it back on would be lost if it
+  // were omitted here. Write it explicitly as well.
+  std::string content = rex::cvar::SerializeToTOML();
+  const std::string vsync = rex::cvar::GetFlagByName("vsync");
+  if (!vsync.empty() && content.find("vsync = ") == std::string::npos) {
+    content += "vsync = " + vsync + "\n";
+  }
+  std::ofstream file(path);
+  if (!file) {
+    REXLOG_ERROR("settings menu: failed to open {}", path.string());
+    return;
+  }
+  file << "# Auto-generated cvar configuration\n" << content;
+  if (!file) {
+    REXLOG_ERROR("settings menu: failed to write {}", path.string());
+    return;
+  }
   REXLOG_INFO("settings menu: saved to {}", path.string());
 }
 
