@@ -22,6 +22,10 @@ REXCVAR_DEFINE_STRING(mcla_gpu_backend, "any", "MCLA",
 std::unique_ptr<rex::system::IAudioSystem> CreateMclaAudioSystem(
     rex::runtime::FunctionDispatcher* function_dispatcher);
 
+// settings_menu.cpp: applies the QUALITY PRESET row's startup options before
+// the renderer and the game read them.
+void MclaApplyQualityPresetFromConfig();
+
 // Started with no options (a double-click on mcla.exe), the game should just
 // run: find the extracted game next to the executable or, as the build leaves
 // it, in the repository a few folders up, and load the Xenos GPU plugin.
@@ -44,6 +48,7 @@ void MclaApp::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void MclaApp::OnPreSetup(rex::RuntimeConfig& config) {
+  MclaApplyQualityPresetFromConfig();
   config.audio_factory = &CreateMclaAudioSystem;
   if (config.gpu_plugin.empty()) {
     config.gpu_plugin = "xenos";
