@@ -1,11 +1,12 @@
 // Performance overlay: FPS, frame time, CPU, GPU, RAM and VRAM.
 //
 // Toggled with F8 or the PERFORMANCE OVERLAY row in the pause menu, and kept
-// in mcla.toml as mcla_perf_overlay. FPS and frame time come from the counters
-// the GPU plugin publishes on every swap, so showing the overlay costs no
-// extra frame samples. The load figures are read from the host every half
-// second; on Linux they come from /proc and the amdgpu sysfs entries, and on
-// other hosts the system rows show N/A.
+// in mcla.toml as mcla_perf_overlay. FPS and frame time come from the host-side
+// interval between engine timer calls (frame_stats.h): the GPU plugin has its
+// own copy of the perf counter registry, so its swap counters are not visible
+// here. The load figures are read from the host every half second; on Linux
+// they come from /proc and the amdgpu sysfs entries, and on other hosts the
+// system rows show N/A.
 
 #pragma once
 
