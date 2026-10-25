@@ -13,9 +13,12 @@ On Linux, two more go on top, from the same folder:
 ```
 git apply ../../patches/rexglue-linux-procmap-query.patch
 git apply ../../patches/rexglue-linux-wait-sleep.patch
+git apply ../../patches/rexglue-present-max-height.patch
 ```
 
 They make page-protection lookups and multi-handle waits cheap on Linux. The Windows build needs neither. The PS5 build also applies `rexglue-linux-wait-sleep.patch` (`ps5/make_ps5.sh` does it): the PS5 runs the same POSIX threading code, where a wait shorter than 1 ms spun instead of sleeping.
+
+The present-height patch lets the Vulkan swapchain be smaller than the window; the OS scales it to the surface. It backs the DISPLAY → OUTPUT RESOLUTION row (`present_max_height`, 0 = window size), so a 4K window can present a true 1080p image. It is Linux/Vulkan only; the Windows D3D12 path ignores it.
 
 The first was several files at first; they are combined now because several touch the same build files and would not apply independently. The second goes on top of the first (both change `src/graphics/vulkan/command_processor.cpp`). The build scripts apply all three, and add the second to an SDK checkout that was patched before it existed.
 
@@ -38,6 +41,14 @@ The car reflection fix: cars came out white with a glow around them, worst at ni
 | The multiply by the saturated alpha before the colour is written | `dxbc_translator.h`, `dxbc_translator_om.cpp`, `spirv_translator.h`, `spirv_translator_rb.cpp` (under `include/rex/graphics/pipeline/shader` and `src/graphics/pipeline/shader`) | D3D12; Vulkan (PC, PS5) |
 
 Host render target path only (the default on both backends).
+
+## rexglue-present-max-height.patch
+
+Lets the Vulkan presenter create a swapchain smaller than the window; the presentation engine stretches it to the surface. It backs the DISPLAY → OUTPUT RESOLUTION row and the `present_max_height` cvar (0 = match the window). With a 4K window and `present_max_height = 1080`, the final present pass runs at 1920×1080 and the OS scales it to 4K. Linux/Vulkan only; the D3D12 path does not compile this file.
+
+| Change | Files | Affects |
+|---|---|---|
+| `present_max_height` cvar, and capping the swapchain extent to it | `src/ui/vulkan/vulkan_presenter.cpp` | Vulkan (PC, PS5) |
 
 ## rexglue-ffmpeg-ps5-config.patch
 

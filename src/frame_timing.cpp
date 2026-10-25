@@ -12,6 +12,7 @@
 
 #include "generated/default/mcla_init.h"
 
+#include "frame_stats.h"
 #include "mcla_app.h"
 
 #include <algorithm>
@@ -66,6 +67,33 @@ constexpr double kMaxFrameSeconds = 0.125;
 // Set when the frame limiter has run; see PaceUnlimitedSwap.
 std::atomic<bool> g_limiter_ran_since_swap{false};
 
+// The timer function has callers on other threads; only the first one is the
+// game's frame thread, and only its calls are one frame apart.
+const std::thread::id& FrameTimerOwner() {
+  static const std::thread::id owner = std::this_thread::get_id();
+  return owner;
+}
+
+bool IsFrameTimerOwner() {
+  return std::this_thread::get_id() == FrameTimerOwner();
+}
+
+std::atomic<uint64_t> g_frame_count{0};
+std::atomic<uint32_t> g_frame_time_us{0};
+std::atomic<uint32_t> g_smoothed_frame_time_us{0};
+
+void RecordFrameTime(uint64_t frame_time_us) {
+  if (frame_time_us == 0 || frame_time_us > 1'000'000) {
+    return;
+  }
+  const uint32_t time_us = uint32_t(frame_time_us);
+  g_frame_time_us.store(time_us, std::memory_order_relaxed);
+  const uint32_t previous = g_smoothed_frame_time_us.load(std::memory_order_relaxed);
+  const uint32_t smoothed = previous ? (previous * 7 + time_us) / 8 : time_us;
+  g_smoothed_frame_time_us.store(smoothed, std::memory_order_relaxed);
+  g_frame_count.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool OriginalTiming() {
   return REXCVAR_GET(mcla_fps) < 0;
 }
@@ -82,8 +110,7 @@ uint64_t NowMicros() {
 void WaitForFrameDeadline() {
   static uint64_t next_us = 0;
   // The timer function has callers on other threads; pace only the first one.
-  static const std::thread::id owner = std::this_thread::get_id();
-  if (std::this_thread::get_id() != owner) {
+  if (!IsFrameTimerOwner()) {
     return;
   }
 
@@ -131,10 +158,27 @@ float ReadGuestFloat(uint32_t address) {
 
 }  // namespace
 
+MclaFrameStats MclaGetFrameStats() {
+  return {g_frame_count.load(std::memory_order_relaxed),
+          g_frame_time_us.load(std::memory_order_relaxed),
+          g_smoothed_frame_time_us.load(std::memory_order_relaxed)};
+}
+
 void MclaTickButtonPrompts();
 void MclaTickPerfOptions();
 
 void mcla_frame_delta(PPCRegister& r8) {
+  // The engine timer runs once per rendered frame on the game thread. Measure
+  // that interval for the performance overlay; the GPU plugin's swap counters
+  // live in the plugin's own copy of the perf registry.
+  if (IsFrameTimerOwner()) {
+    static uint64_t last_frame_us = 0;
+    const uint64_t now = NowMicros();
+    if (last_frame_us) {
+      RecordFrameTime(now - last_frame_us);
+    }
+    last_frame_us = now;
+  }
   MclaTickButtonPrompts();
   MclaTickPerfOptions();
   if (OriginalTiming()) {

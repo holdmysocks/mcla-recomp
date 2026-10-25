@@ -1,0 +1,35 @@
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -52,6 +52,15 @@
+ REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
+                     "Clear render pass during presentation");
+ 
++// The swapchain may be smaller than the window; the OS scales it to the
++// surface. This keeps the final present pass cheap while the window stays at
++// the desktop resolution.
++REXCVAR_DEFINE_INT32(present_max_height, 0, "UI/Presenter",
++                     "Cap the swapchain height in pixels; the OS scales it to the window "
++                     "(0 = window size)")
++    .range(0, 8192)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_immediate, true, "UI/Vulkan",
+                     "Allow immediate present mode (no vsync)");
+ 
+@@ -1217,6 +1226,15 @@
+     VkExtent2D& image_extent_out, bool& is_fifo_out, bool& ui_surface_unusable_out) {
+   ui_surface_unusable_out = false;
+ 
++  // Allow the swapchain to be smaller than the window. The presentation
++  // engine stretches it to the surface, so the final pass runs at the capped
++  // height while the window can remain at the desktop resolution.
++  if (const int32_t max_height = REXCVAR_GET(present_max_height);
++      max_height > 0 && height > uint32_t(max_height)) {
++    width = uint32_t((uint64_t(width) * uint32_t(max_height) + height / 2) / height);
++    height = uint32_t(max_height);
++  }
++
+   const VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
+   const VkPhysicalDevice physical_device = vulkan_device->physical_device();
+   const VulkanDevice::Functions& dfn = vulkan_device->functions();

@@ -25,9 +25,11 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/platform.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
+#include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
 REXCVAR_DEFINE_BOOL(mcla_motion_blur, true, "MCLA", "Motion blur");
@@ -374,8 +376,25 @@ constexpr const char* kPromptValues[] = {"auto", "xbox", "playstation"};
 constexpr const char* kPromptLabels[] = {"AUTO", "XBOX", "PLAYSTATION"};
 constexpr const char* kIntroValues[] = {"normal", "fast", "skip"};
 constexpr const char* kIntroLabels[] = {"NORMAL", "FAST", "SKIP (NO LOGO)"};
+constexpr const char* kResolutionValues[] = {"1", "2", "3"};
+constexpr const char* kResolutionLabels[] = {"720P", "1440P", "4K"};
+// The game's framebuffer is 1280x720, so its render targets can only be scaled
+// by whole numbers (720p, 1440p, 4K). The swapchain, however, can be any size;
+// the OS scales it to the window. This row caps the swapchain height, which
+// gives a true 1080p output while the window stays at the desktop resolution.
+// The Vulkan presenter patch that implements it is Linux-only.
+#if REX_PLATFORM_LINUX
+constexpr const char* kOutputValues[] = {"0", "720", "1080", "1440", "2160"};
+constexpr const char* kOutputLabels[] = {"NATIVE", "720P", "1080P", "1440P", "4K"};
+#endif
 
 const ItemDef kDisplayItems[] = {
+#if REX_PLATFORM_LINUX
+    {"PM_MxOutput", ItemKind::kStringChoice, "present_max_height",
+     "OUTPUT RESOLUTION (NEXT START)", kOutputValues, kOutputLabels, nullptr, 5},
+#endif
+    {"PM_MxResolution", ItemKind::kStringChoice, "resolution_scale",
+     "RENDER SCALE (NEXT START)", kResolutionValues, kResolutionLabels, nullptr, 3},
     {"PM_MxFps", ItemKind::kNumberChoice, "mcla_fps", "FPS TARGET", nullptr, nullptr, kFpsTargets,
      kFpsTargetCount, "%.0f", "UNCAPPED"},
 #if !REX_PLATFORM_PS5
@@ -396,6 +415,7 @@ constexpr double kDensityScales[] = {0.0, 0.5, 1.0};
 constexpr double kTrafficDistances[] = {250.0, 325.0, 400.0};
 
 const ItemDef kPerformanceItems[] = {
+    {"PM_MxPerfOverlay", ItemKind::kToggle, "mcla_perf_overlay", "PERFORMANCE OVERLAY"},
     {"PM_MxSingleTile", ItemKind::kToggle, "mcla_single_tile", "SINGLE TILE RENDERING"},
     {"PM_MxFenceYield", ItemKind::kToggle, "mcla_fence_yield", "GPU WAIT YIELD"},
     {"PM_MxShadows", ItemKind::kToggle, "mcla_shadows", "SHADOWS"},
@@ -926,7 +946,17 @@ bool mcla_menu_click(PPCRegister& r3, PPCRegister& r31) {
     if (auto* context = runtime ? runtime->app_context() : nullptr) {
       REXLOG_INFO("settings menu: quit requested");
       SaveSettingsIfChanged();
-      context->RequestDeferredQuit();
+      // Close the window instead of asking the message loop to stop.
+      // RequestDeferredQuit only clears the UI loop's quit flag; OnDestroy then
+      // waits for the guest thread, which keeps running because nothing
+      // terminates the title, so the process hung on the last frame. Closing
+      // the window runs the same path as the window's close button: the
+      // listener terminates the title and exits the process.
+      if (rex::ui::Window* window = runtime->display_window()) {
+        context->CallInUIThread([window]() { window->RequestClose(); });
+      } else {
+        context->RequestDeferredQuit();
+      }
     }
     r3.u64 = 1;
     return true;

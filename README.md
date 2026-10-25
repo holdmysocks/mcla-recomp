@@ -43,7 +43,7 @@ The script checks for Git, CMake, Ninja, Python 3, Visual Studio Build Tools 202
 
 **Play:** double-click the **Midnight Club Los Angeles** shortcut the build leaves in the repository folder, or `mcla.exe` itself. Keep the folder where it was built; the game data is read from `game\`. An Xbox or PlayStation controller works.
 
-Options go after the program name, for example `mcla.exe --fullscreen=true --mcla_fps=60` (30, 60, 120, or 0 for uncapped). The pause menu has three extra entries: DISPLAY (frame-rate target, vsync, fullscreen, motion blur, depth of field), PERFORMANCE (detail options) and CONTROLS (button prompts, intro speed); changes are saved to `mcla.toml` next to `mcla.exe`.
+Options go after the program name, for example `mcla.exe --fullscreen=true --mcla_fps=60` (30, 60, 120, or 0 for uncapped). `--resolution_scale=3` renders the game internally at 4K, 2 at 1440p and 1 at 720p (whole multiples of the game's 1280×720 framebuffer; 1080p is not an integer scale). `--present_max_height=1080` caps the swapchain at 1080p and lets the OS scale it to the window, so the output can be 1080p even on a 4K display; with render scale 1 it is the fastest 1080p mode, and with 2 the 1440p render is downscaled for a sharper image. Native 4K is GPU-bound on most cards. The pause menu has three extra entries: DISPLAY (output resolution, render scale, frame-rate target, vsync, fullscreen, motion blur, depth of field), PERFORMANCE (detail options) and CONTROLS (button prompts, intro speed); changes are saved to `mcla.toml` next to `mcla.exe`. `F8` toggles a performance overlay (FPS, frame time, CPU, GPU, RAM, VRAM); the same switch is the PERFORMANCE OVERLAY row in the pause menu.
 
 **Update:** `git pull`, then `.\scripts\make_pc.ps1` again.
 
@@ -69,6 +69,7 @@ git apply ../../patches/rexglue-minmax-blend-factor.patch
 git -C thirdparty/FFmpeg apply ../../../../patches/rexglue-ffmpeg-ps5-config.patch
 git apply ../../patches/rexglue-linux-procmap-query.patch
 git apply ../../patches/rexglue-linux-wait-sleep.patch
+git apply ../../patches/rexglue-present-max-height.patch
 CC=clang-20 CXX=clang++-20 cmake --preset linux-amd64 -DREXGLUE_USE_VULKAN=ON -DREXGLUE_ENABLE_TRACY=OFF
 cmake --build out/build/linux-amd64 --config Release
 cmake --install out/build/linux-amd64 --config Release

@@ -1,6 +1,7 @@
 #include "generated/default/mcla_init.h"
 
 #include "mcla_app.h"
+#include "perf_overlay.h"
 
 #include <filesystem>
 
@@ -10,6 +11,9 @@
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/gpu_plugin.h>
+#include <rex/ui/imgui_dialog.h>
+#include <rex/ui/imgui_drawer.h>
+#include <rex/ui/keybinds.h>
 
 REXCVAR_DEFINE_STRING(mcla_gpu_backend, "any", "MCLA",
                       "Graphics backend for the Xenos GPU plugin: any, vulkan or d3d12");
@@ -66,4 +70,36 @@ void MclaApp::OnPostSetup() {
   if (runtime() && runtime()->file_system()) {
     runtime()->file_system()->RegisterSymbolicLink("t:", "\\Device\\Harddisk0\\Partition1");
   }
+}
+
+void MclaApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
+  (void)drawer;
+  UpdatePerfOverlay();
+  // The pause menu changes this from the guest thread; dialogs belong to the
+  // UI thread, so apply the change there.
+  rex::cvar::RegisterChangeCallback("mcla_perf_overlay",
+                                    [this](std::string_view, std::string_view) {
+                                      app_context().CallInUIThread(
+                                          [this]() { UpdatePerfOverlay(); });
+                                    });
+  rex::ui::RegisterBind("bind_perf_overlay", "F8", "Toggle performance overlay", [this]() {
+    const bool enabled = !REXCVAR_GET(mcla_perf_overlay);
+    rex::cvar::SetFlagByName("mcla_perf_overlay", enabled ? "true" : "false");
+  });
+}
+
+void MclaApp::UpdatePerfOverlay() {
+  if (!REXCVAR_GET(mcla_perf_overlay) || !imgui_drawer()) {
+    perf_overlay_.reset();
+    return;
+  }
+  if (!perf_overlay_) {
+    perf_overlay_ = CreateMclaPerfOverlay(imgui_drawer());
+  }
+}
+
+void MclaApp::OnShutdown() {
+  rex::ui::UnregisterBind("bind_perf_overlay");
+  rex::cvar::UnregisterChangeCallbacks("mcla_perf_overlay");
+  perf_overlay_.reset();
 }

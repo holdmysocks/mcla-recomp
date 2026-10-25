@@ -21,9 +21,14 @@ class MclaApp : public rex::ReXApp {
   void OnPreSetup(rex::RuntimeConfig& config) override;
   void OnPostSetup() override;
   void OnPreLaunchModule() override;
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
+  void OnShutdown() override;
 
  private:
   void InstallCrashTrace();
   void ConfigureFrameTiming();
   void StartProfilerIfRequested();
+  void UpdatePerfOverlay();
+
+  std::unique_ptr<rex::ui::ImGuiDialog> perf_overlay_;
 };

@@ -22,6 +22,7 @@ set(MCLA_SOURCES
     src/warp_fix.cpp
     src/button_prompts.cpp
     src/settings_menu.cpp
+    src/perf_overlay.cpp
     src/sampling_profiler.cpp
     src/code_pointer_scan.cpp
 )
