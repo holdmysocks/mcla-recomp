@@ -23,14 +23,20 @@
 #include <unistd.h>
 #endif
 
-REXCVAR_DEFINE_BOOL(mcla_perf_overlay, true, "MCLA",
-                    "Show the performance overlay (FPS, frame time, CPU, GPU, RAM, VRAM)");
+// Off by default: a persistent overlay makes the presenter compose every host
+// frame into the swapchain instead of presenting the guest output directly,
+// which costs performance and is intrusive during normal play.
+REXCVAR_DEFINE_BOOL(mcla_perf_overlay, false, "MCLA",
+                    "Show the performance overlay (F8): FPS and frame time, plus CPU and RAM "
+                    "on Linux, and GPU and VRAM with the amdgpu driver");
 
 namespace {
 
 constexpr double kSampleSeconds = 0.5;
 constexpr float kValueColumn = 70.0f;
 constexpr size_t kFrameHistorySize = 120;
+
+#if REX_PLATFORM_LINUX
 
 std::string FormatPercent(double percent) {
   if (percent < 0.0) {
@@ -51,8 +57,6 @@ std::string FormatBytes(uint64_t used, uint64_t total) {
                 double(total) / kGigabyte, 100.0 * double(used) / double(total));
   return buffer;
 }
-
-#if REX_PLATFORM_LINUX
 
 struct SystemCpuTimes {
   uint64_t idle = 0;
@@ -295,7 +299,7 @@ void MclaPerfOverlayDialog::OnDraw(ImGuiIO& io) {
   if (ImGui::Begin("##mcla_perf", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                       ImGuiWindowFlags_NoNav)) {
+                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
     auto row = [](const char* label, const std::string& value) {
       ImGui::TextDisabled("%s", label);
       ImGui::SameLine(kValueColumn);
@@ -316,11 +320,20 @@ void MclaPerfOverlayDialog::OnDraw(ImGuiIO& io) {
     ImGui::PlotLines("##frame_history", frame_history_.data(), int(frame_history_.size()),
                      int(frame_history_index_), nullptr, 0.0f, 50.0f, ImVec2(180.0f, 34.0f));
 
+#if REX_PLATFORM_LINUX
     row("CPU", FormatPercent(cpu_percent_));
     row("MCLA", FormatPercent(game_cpu_percent_));
-    row("GPU", FormatPercent(gpu_percent_));
+    // The GPU and VRAM figures come from sysfs, which only the amdgpu driver
+    // exposes. Hide them rather than showing two permanent N/A rows on other
+    // GPUs; the CPU and memory figures above still work.
+    if (!GpuPaths().busy.empty()) {
+      row("GPU", FormatPercent(gpu_percent_));
+    }
     row("RAM", FormatBytes(ram_used_, ram_total_));
-    row("VRAM", FormatBytes(vram_used_, vram_total_));
+    if (vram_total_) {
+      row("VRAM", FormatBytes(vram_used_, vram_total_));
+    }
+#endif
   }
   ImGui::End();
 }

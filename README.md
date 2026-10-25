@@ -43,7 +43,7 @@ The script checks for Git, CMake, Ninja, Python 3, Visual Studio Build Tools 202
 
 **Play:** double-click the **Midnight Club Los Angeles** shortcut the build leaves in the repository folder, or `mcla.exe` itself. Keep the folder where it was built; the game data is read from `game\`. An Xbox or PlayStation controller works.
 
-Options go after the program name, for example `mcla.exe --fullscreen=true --mcla_fps=60` (30, 60, 120, or 0 for uncapped). `--resolution_scale=3` renders the game internally at 4K, 2 at 1440p and 1 at 720p (whole multiples of the game's 1280×720 framebuffer; 1080p is not an integer scale). `--present_max_height=1080` caps the swapchain at 1080p and lets the OS scale it to the window, so the output can be 1080p even on a 4K display; with render scale 1 it is the fastest 1080p mode, and with 2 the 1440p render is downscaled for a sharper image. Native 4K is GPU-bound on most cards. The pause menu has three extra entries: DISPLAY (output resolution, render scale, frame-rate target, vsync, fullscreen, motion blur, depth of field), PERFORMANCE (detail options) and CONTROLS (button prompts, intro speed); changes are saved to `mcla.toml` next to `mcla.exe`. `F8` toggles a performance overlay (FPS, frame time, CPU, GPU, RAM, VRAM); the same switch is the PERFORMANCE OVERLAY row in the pause menu.
+Options go after the program name, for example `mcla.exe --fullscreen=true --mcla_fps=60` (30, 60, 120, or 0 for uncapped). `--resolution_scale=3` renders the game internally at 4K, 2 at 1440p and 1 at 720p (whole multiples of the game's 1280×720 framebuffer; 1080p is not an integer scale). Native 4K is GPU-bound on most cards. The pause menu has three extra entries: DISPLAY (render scale, frame-rate target, vsync, fullscreen, motion blur, depth of field), PERFORMANCE (detail options) and CONTROLS (button prompts, intro speed); changes are saved to `mcla.toml` next to `mcla.exe`. `F8` toggles a performance overlay, off at start: FPS and frame time everywhere, plus CPU and RAM on Linux (GPU and VRAM where the amdgpu driver exposes them); the same switch is the PERFORMANCE OVERLAY row in the pause menu. On Linux and Vulkan, DISPLAY also has OUTPUT RESOLUTION; see the Linux section.
 
 **Update:** `git pull`, then `.\scripts\make_pc.ps1` again.
 
@@ -83,6 +83,8 @@ cmake --build --preset linux-amd64-release
 ```
 
 On Wayland, put `vulkan_allow_present_mode_immediate = false` and `vulkan_allow_present_mode_mailbox = false` in `out/build/linux-amd64-release/mcla.toml`; without them the game presents about 1,000 times a second and keeps the GPU busy.
+
+On Wayland, DISPLAY also has OUTPUT RESOLUTION (or `--present_max_height=1080`): the swapchain is capped to that height and the compositor scales it to the window, so a 4K window can present a true 1920×1080 image. This is a presentation setting, not a render setting; RENDER SCALE still controls the game's internal resolution. With the performance overlay visible, a capped output is also cheaper to composite; without an overlay, the compositor can often present the native output directly, so measure both on your system. Mesa's X11/XWayland WSI only accepts a swapchain the size of the window, so the row is hidden on X11 and `--present_max_height` has no effect there (the log says so once).
 
 ## PS5
 

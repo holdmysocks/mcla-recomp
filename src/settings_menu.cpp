@@ -32,6 +32,10 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#if REX_PLATFORM_LINUX
+#include <SDL3/SDL_video.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(mcla_motion_blur, true, "MCLA", "Motion blur");
 REXCVAR_DEFINE_BOOL(mcla_depth_of_field, true, "MCLA", "Depth of field blur");
 REXCVAR_DEFINE_BOOL(mcla_settings_menu, true, "MCLA",
@@ -380,19 +384,18 @@ constexpr const char* kResolutionValues[] = {"1", "2", "3"};
 constexpr const char* kResolutionLabels[] = {"720P", "1440P", "4K"};
 // The game's framebuffer is 1280x720, so its render targets can only be scaled
 // by whole numbers (720p, 1440p, 4K). The swapchain, however, can be any size;
-// the OS scales it to the window. This row caps the swapchain height, which
-// gives a true 1080p output while the window stays at the desktop resolution.
-// The Vulkan presenter patch that implements it is Linux-only.
+// the compositor scales it to the window. This row caps the swapchain height,
+// which gives a true 1080p output while the window stays at the desktop
+// resolution. The Vulkan presenter patch that implements it relies on the
+// compositor scaling the swapchain (Wayland); Mesa's X11 WSI requires a
+// swapchain the size of the window, so CreateSubmenus removes the row there.
+// Keep it last so removing it only shortens the list.
 #if REX_PLATFORM_LINUX
 constexpr const char* kOutputValues[] = {"0", "720", "1080", "1440", "2160"};
 constexpr const char* kOutputLabels[] = {"NATIVE", "720P", "1080P", "1440P", "4K"};
 #endif
 
 const ItemDef kDisplayItems[] = {
-#if REX_PLATFORM_LINUX
-    {"PM_MxOutput", ItemKind::kStringChoice, "present_max_height",
-     "OUTPUT RESOLUTION (NEXT START)", kOutputValues, kOutputLabels, nullptr, 5},
-#endif
     {"PM_MxResolution", ItemKind::kStringChoice, "resolution_scale",
      "RENDER SCALE (NEXT START)", kResolutionValues, kResolutionLabels, nullptr, 3},
     {"PM_MxFps", ItemKind::kNumberChoice, "mcla_fps", "FPS TARGET", nullptr, nullptr, kFpsTargets,
@@ -405,6 +408,10 @@ const ItemDef kDisplayItems[] = {
 #endif
     {"PM_MxMotionBlur", ItemKind::kToggle, "mcla_motion_blur", "MOTION BLUR"},
     {"PM_MxDof", ItemKind::kToggle, "mcla_depth_of_field", "DEPTH OF FIELD"},
+#if REX_PLATFORM_LINUX
+    {"PM_MxOutput", ItemKind::kStringChoice, "present_max_height",
+     "OUTPUT RESOLUTION (NEXT START)", kOutputValues, kOutputLabels, nullptr, 5},
+#endif
 };
 
 // Detail the game can do without when the frame rate matters more; all as
@@ -453,7 +460,9 @@ struct MenuDef {
   int item_count;
 };
 
-const MenuDef kMenus[] = {
+// Non-const: CreateSubmenus drops the OUTPUT RESOLUTION row on hosts whose
+// presentation path cannot scale a swapchain smaller than the window.
+MenuDef kMenus[] = {
     {"PM_MxTabDisplay", "DISPLAY", "MxDisplayMenu", kDisplayItems,
      int(sizeof(kDisplayItems) / sizeof(kDisplayItems[0]))},
     {"PM_MxTabPerf", "PERFORMANCE", "MxPerfMenu", kPerformanceItems,
@@ -463,6 +472,35 @@ const MenuDef kMenus[] = {
 };
 constexpr int kMenuCount = int(sizeof(kMenus) / sizeof(kMenus[0]));
 constexpr int kMaxRows = 16;
+
+// The OUTPUT RESOLUTION row needs a compositor that scales the swapchain to
+// the window. Mesa's X11 WSI requires the swapchain to be the size of the
+// window, so the presenter cannot apply the cap there. The row is last in
+// kDisplayItems so it can be dropped by shortening the menu.
+void ConfigureMenuItems() {
+  static bool configured = false;
+  if (configured) {
+    return;
+  }
+  configured = true;
+#if REX_PLATFORM_LINUX
+  const char* driver = SDL_GetCurrentVideoDriver();
+  // Not initialized yet: leave the menu alone rather than hiding a row that
+  // may work once the window exists.
+  if (!driver || std::strcmp(driver, "wayland") == 0) {
+    return;
+  }
+  for (MenuDef& menu : kMenus) {
+    if (menu.items == kDisplayItems && menu.item_count > 0) {
+      --menu.item_count;
+    }
+  }
+  REXLOG_INFO(
+      "settings menu: OUTPUT RESOLUTION hidden (SDL video driver '{}' cannot scale the "
+      "swapchain)",
+      driver ? driver : "unknown");
+#endif
+}
 
 int ItemValueCount(const ItemDef& item) {
   return item.kind == ItemKind::kToggle ? 2 : item.value_count;
@@ -805,6 +843,7 @@ void SaveSettingsIfChanged() {
 }
 
 void CreateSubmenus() {
+  ConfigureMenuItems();
   if (g_menus_created.load(std::memory_order_relaxed)) {
     return;
   }

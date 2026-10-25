@@ -1,35 +1,60 @@
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..e276c49 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
-@@ -52,6 +52,15 @@
+@@ -49,6 +49,16 @@
  REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                      "Clear render pass during presentation");
  
-+// The swapchain may be smaller than the window; the OS scales it to the
-+// surface. This keeps the final present pass cheap while the window stays at
-+// the desktop resolution.
++// The swapchain may be smaller than the window where the presentation engine
++// scales it to the surface (Wayland compositors do; Mesa's X11 WSI requires
++// the swapchain to match the window). This keeps the final present pass cheap
++// while the window stays at the desktop resolution.
 +REXCVAR_DEFINE_INT32(present_max_height, 0, "UI/Presenter",
 +                     "Cap the swapchain height in pixels; the OS scales it to the window "
-+                     "(0 = window size)")
++                     "(0 = window size; Wayland only)")
 +    .range(0, 8192)
 +    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 +
  REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_immediate, true, "UI/Vulkan",
                      "Allow immediate present mode (no vsync)");
  
-@@ -1217,6 +1226,15 @@
+@@ -1112,6 +1122,17 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
      VkExtent2D& image_extent_out, bool& is_fifo_out, bool& ui_surface_unusable_out) {
    ui_surface_unusable_out = false;
  
-+  // Allow the swapchain to be smaller than the window. The presentation
-+  // engine stretches it to the surface, so the final pass runs at the capped
-+  // height while the window can remain at the desktop resolution.
-+  if (const int32_t max_height = REXCVAR_GET(present_max_height);
-+      max_height > 0 && height > uint32_t(max_height)) {
-+    width = uint32_t((uint64_t(width) * uint32_t(max_height) + height / 2) / height);
-+    height = uint32_t(max_height);
++  // Allow the swapchain to be smaller than the window where the presentation
++  // engine can stretch it to the surface, so the final pass runs at the capped
++  // height while the window can remain at the desktop resolution. Keep the
++  // window height to report when the surface refuses the cap below.
++  const uint32_t window_height = height;
++  const int32_t max_height_cap = REXCVAR_GET(present_max_height);
++  if (max_height_cap > 0 && height > uint32_t(max_height_cap)) {
++    width = uint32_t((uint64_t(width) * uint32_t(max_height_cap) + height / 2) / height);
++    height = uint32_t(max_height_cap);
 +  }
 +
    const VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
    const VkPhysicalDevice physical_device = vulkan_device->physical_device();
    const VulkanDevice::Functions& dfn = vulkan_device->functions();
+@@ -1152,6 +1173,20 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+     return VK_NULL_HANDLE;
+   }
+ 
++  // Some WSI implementations (Mesa's X11, for example) report the window size
++  // as both minImageExtent and maxImageExtent, so the clamp above undoes the
++  // cap. Say so once rather than leaving present_max_height looking broken.
++  if (max_height_cap > 0 && window_height > uint32_t(max_height_cap) &&
++      image_extent.height != height) {
++    static bool max_height_unsupported_logged = false;
++    if (!max_height_unsupported_logged) {
++      max_height_unsupported_logged = true;
++      REXLOG_WARN(
++          "VulkanPresenter: present_max_height {} is not supported by this surface; using {}x{}",
++          max_height_cap, image_extent.width, image_extent.height);
++    }
++  }
++
+   // Get the queue family for presentation.
+   uint32_t queue_family_index_present = UINT32_MAX;
+   const std::vector<VulkanDevice::QueueFamily>& queue_families = vulkan_device->queue_families();
