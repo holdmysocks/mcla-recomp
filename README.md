@@ -4,6 +4,8 @@
 
 ## I will only update this project for PS5 improvements going forward as I do not have the time to support issues or fixes.
 
+## If you would like to try the game rewritten in Rust, I am working on that for fun at [rusty-mcla](https://github.com/holdmysocks/rusty-mcla) with steady progress almost every day.
+
 Static recompilation of *Midnight Club: Los Angeles Complete Edition* (Xbox 360, title 545407F8) to native code, for Windows, Linux and jailbroken PS5 consoles.
 
 ![The game installed on a PS5 home screen](docs/images/ps5-home-screen.webp)
