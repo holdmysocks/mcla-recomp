@@ -1,5 +1,9 @@
 # MCLA
 
+## I am no longer maintaining this project for PC, for an updated one with a launcher see [mcla-recomp by RenanQueiroz](https://github.com/RenanQueiroz/mcla-recomp) and the ORIGINAL [LARecomp by MZ](https://github.com/mzzvxm/larecomp) is becoming available soon, I highly recommend this one. 
+
+## I will only update this project for PS5 improvements going forward as I do not have the time to support issues or fixes.
+
 Static recompilation of *Midnight Club: Los Angeles Complete Edition* (Xbox 360, title 545407F8) to native code, for Windows, Linux and jailbroken PS5 consoles.
 
 ![The game installed on a PS5 home screen](docs/images/ps5-home-screen.webp)
